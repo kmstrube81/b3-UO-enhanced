@@ -31,12 +31,13 @@ CREATE TABLE IF NOT EXISTS `clients` (
   `name` VARCHAR(32) NOT NULL DEFAULT '',
   `auto_login` TINYINT(1) UNSIGNED NOT NULL DEFAULT '0',
   `mask_level` TINYINT(1) UNSIGNED NOT NULL DEFAULT '0',
-  `group_bits` MEDIUMINT(8) UNSIGNED NOT NULL DEFAULT '0',
+  `group_bits` MEDIUMINT(8) NOT NULL DEFAULT '0',
   `greeting` VARCHAR(128) NOT NULL DEFAULT '',
   `time_add` INT(11) UNSIGNED NOT NULL DEFAULT '0',
   `time_edit` INT(11) UNSIGNED NOT NULL DEFAULT '0',
   `password` VARCHAR(32) DEFAULT NULL,
   `login` VARCHAR(255) DEFAULT NULL,
+  `discord_id` VARCHAR(255) DEFAULT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY `guid` (`guid`),
   KEY `group_bits` (`group_bits`),
@@ -92,3 +93,13 @@ CREATE TABLE IF NOT EXISTS `data` (
   `data_value` VARCHAR(255) NOT NULL,
   PRIMARY KEY (`data_key`)
 ) ENGINE=MyISAM DEFAULT CHARSET=utf8;
+
+
+-- Schema version tracking
+CREATE TABLE IF NOT EXISTS `schema_version` (
+  `version` VARCHAR(16) NOT NULL PRIMARY KEY,
+  `applied_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=MyISAM DEFAULT CHARSET=utf8;
+
+-- Baseline version inserted by b3.sql
+INSERT IGNORE INTO `schema_version` (`version`) VALUES ('20250918.2');
