@@ -161,7 +161,6 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         self._cronTabCorrectStats = None
         self.query = None                   # shortcut to the storage.query function
         self.unranked_modes = set()
-        self._current_gametype = None
         b3.plugin.Plugin.__init__(self, console, config)
 
     def onStartup(self):
@@ -207,7 +206,6 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         self.registerEvent('EVT_CLIENT_KILL', self.onKill)
         self.registerEvent('EVT_CLIENT_KILL_TEAM', self.onTeamKill)
         self.registerEvent('EVT_CLIENT_SUICIDE', self.onSuicide)
-        # subscribe to map/round boundaries so we refresh mode early and reliably
         self.registerEvent('EVT_GAME_ROUND_START', self.onRoundStart)
         self.registerEvent('EVT_CLIENT_ACTION', self.onAction)       # for game-events/actions
         self.registerEvent('EVT_CLIENT_DAMAGE', self.onDamage)       # for assist recognition
@@ -284,8 +282,6 @@ class XlrstatsPlugin(b3.plugin.Plugin):
 
         # check number of online players (if available)
         self.checkMinPlayers()
-        
-        self._refresh_gametype()
 
         self.console.say('XLRstats v%s by %s started' % (__version__, __author__))
         # end startup sequence
@@ -425,29 +421,6 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         load_conf('history_monthly_table', 'history_monthly')
         load_conf('history_weekly_table', 'history_weekly')
         load_conf('ctime_table', 'ctime')
-    
-    def _refresh_gametype(self):
-        """Cache current gametype from the server."""
-        gt = None
-        try:
-            c = self.console.getCvar('g_gametype')
-            if c and c.value:
-                gt = str(c.value).strip().lower()
-        except Exception as e:
-            self.debug('xlrstats: could not read g_gametype: %r' % e)
-
-        # Some CoD parsers expose gametype via console.game / gameType; keep as fallback.
-        if not gt:
-            try:
-                # varies by parser; keep defensive
-                if hasattr(self.console, 'game') and getattr(self.console.game, 'gameType', None):
-                    gt = str(self.console.game.gameType).strip().lower()
-            except Exception:
-                pass
-
-        self._current_gametype = gt or self._current_gametype  # keep last known if None
-        self.debug('xlrstats: current gametype cached as %r' % self._current_gametype)
-
         
     ####################################################################################################################
     #                                                                                                                  #
@@ -466,14 +439,14 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         """
         Handle EVT_CLIENT_KILL
         """
-        if self._xlrstats_active:
+        if self._xlrstats_active and self.console.game.gameType not in self.unranked_modes:
             self.kill(event.client, event.target, event.data)
 
     def onTeamKill(self, event):
         """
         Handle EVT_CLIENT_KILL_TEAM
         """
-        if self._xlrstats_active:
+        if self._xlrstats_active and self.console.game.gameType not in self.unranked_modes:
             if self.console.game.gameType in self._ffa:
                 self.kill(event.client, event.target, event.data)
             else:
@@ -483,21 +456,20 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         """
         Handle EVT_CLIENT_DAMAGE
         """
-        if self._xlrstats_active:
+        if self._xlrstats_active and self.console.game.gameType not in self.unranked_modes:
             self.damage(event.client, event.target, event.data)
 
     def onSuicide(self, event):
         """
         Handle EVT_CLIENT_SUICIDE
         """
-        if self._xlrstats_active:
+        if self._xlrstats_active and self.console.game.gameType not in self.unranked_modes:
             self.suicide(event.client, event.target, event.data)
 
     def onRoundStart(self, _):
         """
         Handle EVT_GAME_ROUND_START
         """
-        self._refresh_gametype()
         # disable k/d counting if minimum players are not met
         self.checkMinPlayers(_roundstart=True)
         self.roundstart()
@@ -506,7 +478,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         """
         Handle EVT_CLIENT_ACTION
         """
-        if self._xlrstats_active:
+        if self._xlrstats_active and self.console.game.gameType not in self.unranked_modes:
             self.action(event.client, event.data)
 
     ####################################################################################################################
@@ -544,14 +516,13 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         and if not it disables stats counting on next roundstart
         """
         self._current_nr_players = len(self.console.clients.getList())
-        gt = self._current_gametype
         self.debug('checking number of players online: minimum = %s, current = %s', self.min_players, self._current_nr_players)
         if self._current_nr_players < self.min_players and self._xlrstats_active and _roundstart:
             self.info('XLRstats disabled: not enough players online')
             if not self.silent:
                 self.console.say('XLRstats disabled: not enough players online!')
             self._xlrstats_active = False
-        elif self._current_nr_players >= self.min_players and not self._xlrstats_active and ( gt not in self.unranked_modes ):
+        elif self._current_nr_players >= self.min_players and not self._xlrstats_active:
             self.info('XLRstats enabled: collecting Stats')
             if not self.silent:
                 self.console.say('XLRstats enabled: now collecting stats!')
