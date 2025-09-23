@@ -1427,7 +1427,12 @@ class XlrstatsPlugin(b3.plugin.Plugin):
             else:
                 self._last_map = self.console.game.mapName
                 #self._last_roundtime = self.console.game._roundTimeStart
-
+        
+        #echo whether its ranked or not during game start
+        message = 'Current Ganemode is %r. Round is UNRANKED', % self._current_gametype
+        if not self._is_ranked_now():
+            self.console.say(message)
+        
         mapstats = self.get_MapStats(self.console.game.mapName)
         if mapstats:
             mapstats.rounds += 1
