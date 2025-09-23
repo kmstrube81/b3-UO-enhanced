@@ -334,7 +334,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         except Exception:
             raw = ''
         modes = []
-        for part in (raw or '').split(','):
+        for part in (raw or '').split(' '):
             s = part.strip().lower()
             if s:
                 modes.append(s)
@@ -1430,7 +1430,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         
         #echo whether its ranked or not during game start
         message = '^3Gamemode: ^7%s ^1UNRANKED' % self._current_gametype
-
+        self.debug('xlrstats: current gamemode = %r' % self._current_gametype)
         if not self._is_ranked_now():
             self.console.say(message)
         
