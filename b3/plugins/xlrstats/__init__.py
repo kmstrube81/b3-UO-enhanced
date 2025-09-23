@@ -56,7 +56,7 @@ ASSISTER = "assister"
 class XlrstatsPlugin(b3.plugin.Plugin):
 
     _world_clientid = None
-    _ffa = ['dm', 'ffa', 'syc-ffa']
+    _ffa = ['dm', 'ffa', 'syc-ffa', 'wawa','gg', 'oitc']
 
     # on damage_able_games we'll only count assists when damage is 50 points or more
     _damage_able_games = ['cod4', 'cod5', 'cod6', 'cod7', 'cod8']
@@ -448,12 +448,6 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         self._current_gametype = gt or self._current_gametype  # keep last known if None
         self.debug('xlrstats: current gametype cached as %r' % self._current_gametype)
 
-    def _is_ranked_now(self):
-        """Return True if we should record stats for the current mode."""
-        gt = (self._current_gametype or '').lower()
-        if gt and gt in self.unranked_modes:
-            return False
-        return True
         
     ####################################################################################################################
     #                                                                                                                  #
@@ -472,8 +466,6 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         """
         Handle EVT_CLIENT_KILL
         """
-        if not self._is_ranked_now():
-            return
         if self._xlrstats_active:
             self.kill(event.client, event.target, event.data)
 
@@ -481,8 +473,6 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         """
         Handle EVT_CLIENT_KILL_TEAM
         """
-        if not self._is_ranked_now():
-            return
         if self._xlrstats_active:
             if self.console.game.gameType in self._ffa:
                 self.kill(event.client, event.target, event.data)
@@ -493,8 +483,6 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         """
         Handle EVT_CLIENT_DAMAGE
         """
-        if not self._is_ranked_now():
-            return
         if self._xlrstats_active:
             self.damage(event.client, event.target, event.data)
 
@@ -518,8 +506,6 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         """
         Handle EVT_CLIENT_ACTION
         """
-        if not self._is_ranked_now():
-            return
         if self._xlrstats_active:
             self.action(event.client, event.data)
 
@@ -554,17 +540,18 @@ class XlrstatsPlugin(b3.plugin.Plugin):
     def checkMinPlayers(self, _roundstart=False):
         """
         Checks if minimum amount of players are present.
-        If minimum amount of players is reached will enable stats collecting
+        If minimum amount of players is reached will enable stats collecting (if its a ranked game mode)
         and if not it disables stats counting on next roundstart
         """
         self._current_nr_players = len(self.console.clients.getList())
+        
         self.debug('checking number of players online: minimum = %s, current = %s', self.min_players, self._current_nr_players)
         if self._current_nr_players < self.min_players and self._xlrstats_active and _roundstart:
             self.info('XLRstats disabled: not enough players online')
             if not self.silent:
                 self.console.say('XLRstats disabled: not enough players online!')
             self._xlrstats_active = False
-        elif self._current_nr_players >= self.min_players and not self._xlrstats_active:
+        elif self._current_nr_players >= self.min_players and not self._xlrstats_active and not gt in self.unranked_modes :
             self.info('XLRstats enabled: collecting Stats')
             if not self.silent:
                 self.console.say('XLRstats enabled: now collecting stats!')
@@ -1429,10 +1416,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
                 #self._last_roundtime = self.console.game._roundTimeStart
         
         #echo whether its ranked or not during game start
-        message = '^3Gamemode: ^7%s ^1UNRANKED' % self._current_gametype
         self.debug('xlrstats: current gamemode = %r' % self._current_gametype)
-        if not self._is_ranked_now():
-            self.console.say(message)
         
         mapstats = self.get_MapStats(self.console.game.mapName)
         if mapstats:
