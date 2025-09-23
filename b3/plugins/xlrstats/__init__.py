@@ -544,14 +544,14 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         and if not it disables stats counting on next roundstart
         """
         self._current_nr_players = len(self.console.clients.getList())
-        
+        gt = self._current_gametype
         self.debug('checking number of players online: minimum = %s, current = %s', self.min_players, self._current_nr_players)
         if self._current_nr_players < self.min_players and self._xlrstats_active and _roundstart:
             self.info('XLRstats disabled: not enough players online')
             if not self.silent:
                 self.console.say('XLRstats disabled: not enough players online!')
             self._xlrstats_active = False
-        elif self._current_nr_players >= self.min_players and not self._xlrstats_active and not gt in self.unranked_modes :
+        elif self._current_nr_players >= self.min_players and not self._xlrstats_active and ( gt not in self.unranked_modes ):
             self.info('XLRstats enabled: collecting Stats')
             if not self.silent:
                 self.console.say('XLRstats enabled: now collecting stats!')
