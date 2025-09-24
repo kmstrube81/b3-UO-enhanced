@@ -172,6 +172,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
 
         # build database schema if needed
         self.build_database_schema()
+        self.updateMatchColumns()
 
         # register our commands
         if 'commands' in self.config.sections():
@@ -390,6 +391,21 @@ class XlrstatsPlugin(b3.plugin.Plugin):
                             # raise an exception without actually changing the database table structure (which is OK!)
                             pass
 
+    def updateMatchColumns(self):
+        # playerstats: match W/L + Wawa W/L
+        self._addTableColumn('wins',        self.playerstats_table, 'INT UNSIGNED NOT NULL DEFAULT 0')
+        self._addTableColumn('losses',      self.playerstats_table, 'INT UNSIGNED NOT NULL DEFAULT 0')
+        self._addTableColumn('wawa_wins',   self.playerstats_table, 'INT UNSIGNED NOT NULL DEFAULT 0')
+        self._addTableColumn('wawa_losses', self.playerstats_table, 'INT UNSIGNED NOT NULL DEFAULT 0')
+
+        # playermaps: per-map match W/L
+        self._addTableColumn('wins',        self.playermaps_table,  'INT UNSIGNED NOT NULL DEFAULT 0')
+        self._addTableColumn('losses',      self.playermaps_table,  'INT UNSIGNED NOT NULL DEFAULT 0')
+
+        # opponents: head-to-head Wawa W/L (reuses your xlr_opponents table)
+        self._addTableColumn('wawa_wins',   self.opponents_table,   'INT UNSIGNED NOT NULL DEFAULT 0')
+        self._addTableColumn('wawa_losses', self.opponents_table,   'INT UNSIGNED NOT NULL DEFAULT 0')
+
     def load_config_tables(self):
         """
         Load config section 'tables'
@@ -479,6 +495,9 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         Handle EVT_CLIENT_ACTION
         """
         if self._xlrstats_active and self.console.game.gameType not in self.unranked_modes:
+            if isinstance(data, dict) and 'action' in data:
+                self._handleMatchAction(event.client, data)
+                return
             self.action(event.client, event.data)
 
     ####################################################################################################################
@@ -486,7 +505,95 @@ class XlrstatsPlugin(b3.plugin.Plugin):
     #    OTHER METHODS                                                                                                 #
     #                                                                                                                  #
     ####################################################################################################################
+    
+    
+    def _handleMatchAction(self, client, payload):
+        """
+        payload: {
+          'action': 'match_win'|'match_loss'|'wawa_win'|'wawa_loss',
+          'guid': '...', 'name': '...',
+          'map': 'mp_xxx', 'gametype': 'dm/tdm/...',        # optional but present from parser
+          'team': 'allies'|'axis'|'' ,                      # optional
+          'opponent_guid': '...', 'opponent_name': '...'    # Wawa only
+        }
+        """
+        action = (payload.get('action') or '').lower()
+        if action not in ('match_win', 'match_loss', 'wawa_win', 'wawa_loss'):
+            return
 
+        # ensure playerstats row exists
+        playerstats = self.get_PlayerStats(client)
+        if playerstats is None:
+            return
+        if hasattr(playerstats, '_new'):
+            self.save_Stat(playerstats)
+
+        # --- 1) Update xlr_playerstats -------------------------
+        if action == 'match_win':
+            self.query("UPDATE %s SET wins = COALESCE(wins,0)+1 WHERE client_id = %%s" % self.playerstats_table, [playerstats.client_id])
+        elif action == 'match_loss':
+            self.query("UPDATE %s SET losses = COALESCE(losses,0)+1 WHERE client_id = %%s" % self.playerstats_table, [playerstats.client_id])
+        elif action == 'wawa_win':
+            self.query("UPDATE %s SET wawa_wins = COALESCE(wawa_wins,0)+1 WHERE client_id = %%s" % self.playerstats_table, [playerstats.client_id])
+        elif action == 'wawa_loss':
+            self.query("UPDATE %s SET wawa_losses = COALESCE(wawa_losses,0)+1 WHERE client_id = %%s" % self.playerstats_table, [playerstats.client_id])
+
+        # --- 2) Update xlr_playermaps (match W/L only) --------
+        if action in ('match_win', 'match_loss'):
+            # mapstats row (ensures map_id)
+            mapstats = self.get_MapStats(self.console.game.mapName)
+            if mapstats and hasattr(mapstats, '_new'):
+                self.save_Stat(mapstats)
+            if mapstats:
+                playermap = self.get_PlayerMaps(playerstats.id, mapstats.id)
+                if playermap and hasattr(playermap, '_new'):
+                    self.save_Stat(playermap)
+                col = 'wins' if action == 'match_win' else 'losses'
+                self.query("UPDATE %s SET %s = COALESCE(%s,0)+1 WHERE player_id = %%s AND map_id = %%s"
+                           % (self.playermaps_table, col, col), [playerstats.id, mapstats.id])
+
+        # --- 3) Update xlr_opponents head-to-head (Wawa only) -
+        if action in ('wawa_win', 'wawa_loss'):
+            opp_guid = payload.get('opponent_guid')
+            opp_name = payload.get('opponent_name') or ''
+            if opp_guid:
+                opp_id = self._get_or_create_client_id(opp_guid, opp_name)
+                if opp_id:
+                    # ensure row exists in opponents table (uses your existing schema killer_id/target_id)
+                    # we'll store Wawa W/L in the same row keyed as (killer_id=player_id, target_id=opponent_id)
+                    self._ensure_opponent_row(playerstats.id, opp_id)
+                    col = 'wawa_wins' if action == 'wawa_win' else 'wawa_losses'
+                    self.query("UPDATE %s SET %s = COALESCE(%s,0)+1 WHERE killer_id = %%s AND target_id = %%s"
+                               % (self.opponents_table, col, col), [playerstats.id, opp_id])
+
+    def _get_or_create_client_id(self, guid, name=''):
+        # First try to resolve
+        cur = self.query("SELECT id FROM %s WHERE guid = %%s LIMIT 1" % self.clients_table, [guid])
+        if cur and not cur.EOF:
+            return int(cur.getRow()['id'])
+        # Create minimal client row so stats can attach
+        try:
+            self.query("INSERT INTO %s (guid, name) VALUES (%%s, %%s)" % self.clients_table, [guid, name or guid])
+        except Exception:
+            pass
+        cur = self.query("SELECT id FROM %s WHERE guid = %%s LIMIT 1" % self.clients_table, [guid])
+        if cur and not cur.EOF:
+            return int(cur.getRow()['id'])
+        return None
+
+    def _ensure_opponent_row(self, player_id, opponent_id):
+        cur = self.query("SELECT 1 FROM %s WHERE killer_id = %%s AND target_id = %%s LIMIT 1" % self.opponents_table,
+                         [player_id, opponent_id])
+        if cur and not cur.EOF:
+            return
+        # create with current default columns; wawa_* columns will default to 0
+        try:
+            self.query("INSERT INTO %s (killer_id, target_id, kills, retals) VALUES (%%s, %%s, 0, 0)"
+                       % self.opponents_table, [player_id, opponent_id])
+        except Exception:
+            pass
+
+    
     def getWebsiteVariables(self):
         """
         Thread that polls for XLRstats webfront variables
