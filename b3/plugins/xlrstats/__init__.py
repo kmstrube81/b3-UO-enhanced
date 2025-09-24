@@ -495,6 +495,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         Handle EVT_CLIENT_ACTION
         """
         if self._xlrstats_active and self.console.game.gameType not in self.unranked_modes:
+            data = event.data
             if isinstance(data, dict) and 'action' in data:
                 self._handleMatchAction(event.client, data)
                 return

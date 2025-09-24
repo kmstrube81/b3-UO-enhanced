@@ -818,116 +818,72 @@ class CodParser(AbstractParser):
                     sp.guid = p.get('guid', sp.guid)
                 sp.data = p
                 sp.auth()
-    def OnW(self, action, data, match=None):
-    # Team/DM winners (variable # of players)
-    return self._handle_match_wl('W', match)
 
-def OnL(self, action, data, match=None):
-    # Team/DM losers (variable # of players)
-    return self._handle_match_wl('L', match)
+    def _current_map_and_mode(self):
+        mapname  = getattr(self.game, 'mapName', '') or ''
+        gametype = getattr(self.game, 'gameType', '') or ''
+        return mapname, gametype
 
-def OnWW(self, action, data, match=None):
-    # Wawa winner line
-    return self._handle_wawa('WW', match)
+    def _handle_match_wl(self, wl, match):
+        """
+        Handles team/DM per-match lines:
+          W;axis;GUID;Name;GUID;Name;...    (team can be 'allies','axis', or '' for DM)
+          L;;GUID;Name;GUID;Name;...        (DM example)
+        Emits 'match_win' or 'match_loss' once per listed player.
+        """
+        team = (match.group('team') or '').lower()
+        rest = match.group('rest')
+        mapname, gametype = self._current_map_and_mode()
 
-def OnLL(self, action, data, match=None):
-    # Wawa loser line
-    return self._handle_wawa('LL', match)
+        action_name = 'match_win' if wl == 'W' else 'match_loss'
+        extra = {'map': mapname, 'gametype': gametype, 'team': team}
 
-def _current_map_and_mode(self):
-    mapname  = getattr(self.game, 'mapName', '') or ''
-    gametype = getattr(self.game, 'gameType', '') or ''
-    return mapname, gametype
+        for name, guid in self._pairs_guid_name(rest):
+            self._emit_action_for_player(action_name, name, guid, extra=extra)
 
-def _pairs_guid_name(self, rest):
-    """
-    Split the 'rest' of the line into (name, guid) pairs, assuming tokens are guid;name;guid;name;...
-    Ignores an odd trailing token if present. Color codes and spaces in names are fine (no semicolons in names).
-    """
-    toks = [t for t in rest.split(';')]  # keep raw (spaces/caret codes are part of name)
-    pairs = []
-    i = 0
-    while i + 1 < len(toks):
-        guid = toks[i].strip()
-        name = toks[i+1]  # do not strip color codes; only strip newline/spaces at ends
-        if guid.isdigit() and name != '':
-            pairs.append((name, guid))
-            i += 2
-        else:
-            # misaligned/malformed -> advance one to try to realign
-            i += 1
-    return pairs
-
-def _emit_action_for_player(self, action_name, name, guid, extra=None):
-    client = self.clients.getByGUID(guid)
-    payload = {'action': action_name, 'guid': guid, 'name': name}
-    if extra:
-        payload.update(extra)
-    self.queueEvent(self.getEvent(b3.events.EVT_CLIENT_ACTION, data=payload, client=client))
-
-
-# ---------- core handlers (GUID->NAME order) ----------
-
-def _handle_match_wl(self, wl, match):
-    """
-    Handles team/DM per-match lines:
-      W;axis;GUID;Name;GUID;Name;...    (team can be 'allies','axis', or '' for DM)
-      L;;GUID;Name;GUID;Name;...        (DM example)
-    Emits 'match_win' or 'match_loss' once per listed player.
-    """
-    team = (match.group('team') or '').lower()
-    rest = match.group('rest')
-    mapname, gametype = self._current_map_and_mode()
-
-    action_name = 'match_win' if wl == 'W' else 'match_loss'
-    extra = {'map': mapname, 'gametype': gametype, 'team': team}
-
-    for name, guid in self._pairs_guid_name(rest):
-        self._emit_action_for_player(action_name, name, guid, extra=extra)
-
-    return None
-
-def _handle_wawa(self, wwll, match):
-    """
-    Handles Wawa 1v1 lines (GUID->NAME order):
-      WW;;GUID_w;Name_w;GUID_l;Name_l
-      LL;;GUID_l;Name_l;GUID_w;Name_w
-    Emits 'wawa_win' and 'wawa_loss' with opponent info.
-    """
-    rest = match.group('rest')
-    mapname, gametype = self._current_map_and_mode()
-    pairs = self._pairs_guid_name(rest)
-
-    if len(pairs) < 2:
-        # If only one player parsed, emit at least one side without opponent info
-        if len(pairs) == 1:
-            name, guid = pairs[0]
-            action_name = 'wawa_win' if wwll == 'WW' else 'wawa_loss'
-            self._emit_action_for_player(action_name, name, guid, extra={'map': mapname, 'gametype': gametype})
         return None
 
-    (name1, guid1), (name2, guid2) = pairs[0], pairs[1]
-    if wwll == 'WW':
-        # first pair is winner; second is loser
-        self._emit_action_for_player(
-            'wawa_win',  name1, guid1,
-            extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2}
-        )
-        self._emit_action_for_player(
-            'wawa_loss', name2, guid2,
-            extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1}
-        )
-    else:
-        # LL: first pair is loser; second is winner
-        self._emit_action_for_player(
-            'wawa_loss', name1, guid1,
-            extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2}
-        )
-        self._emit_action_for_player(
-            'wawa_win',  name2, guid2,
-            extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1}
-        )
-    return None
+    def _handle_wawa(self, wwll, match):
+        """
+        Handles Wawa 1v1 lines (GUID->NAME order):
+          WW;;GUID_w;Name_w;GUID_l;Name_l
+          LL;;GUID_l;Name_l;GUID_w;Name_w
+        Emits 'wawa_win' and 'wawa_loss' with opponent info.
+        """
+        rest = match.group('rest')
+        mapname, gametype = self._current_map_and_mode()
+        pairs = self._pairs_guid_name(rest)
+
+        if len(pairs) < 2:
+            # If only one player parsed, emit at least one side without opponent info
+            if len(pairs) == 1:
+                name, guid = pairs[0]
+                action_name = 'wawa_win' if wwll == 'WW' else 'wawa_loss'
+                self._emit_action_for_player(action_name, name, guid, extra={'map': mapname, 'gametype': gametype})
+            return None
+
+        (name1, guid1), (name2, guid2) = pairs[0], pairs[1]
+        if wwll == 'WW':
+            # first pair is winner; second is loser
+            self._emit_action_for_player(
+                'wawa_win',  name1, guid1,
+                extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2}
+            )
+            self._emit_action_for_player(
+                'wawa_loss', name2, guid2,
+                extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1}
+            )
+        else:
+            # LL: first pair is loser; second is winner
+            self._emit_action_for_player(
+                'wawa_loss', name1, guid1,
+                extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2}
+            )
+            self._emit_action_for_player(
+                'wawa_win',  name2, guid2,
+                extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1}
+            )
+        return None
 
 #--LogLineFormats---------------------------------------------------------------
 
