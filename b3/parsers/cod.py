@@ -104,11 +104,16 @@ class CodParser(AbstractParser):
                    r'(?P<dtype>[A-Z_]+);'
                    r'(?P<dlocation>[a-z_]+))$', re.IGNORECASE),
 
-        # per-match winners/losers (team or DM). 
-        re.compile(r'^(?P<action>[WL]);(?P<team>[a-z]*);(?P<rest>.+)$', re.IGNORECASE),
+        # Team/DM per-match results:
+        #   W;axis;GUID;Name;GUID;Name;...
+        #   L;;GUID;Name;GUID;Name;...        (DM has blank team => data begins with ';')
+        re.compile(r'^(?P<action>[WL]);(?P<data>.+)$', re.IGNORECASE),
 
-        # Match Wawa 1v1 results
-        re.compile(r'^(?P<action>WW|LL);;(?P<rest>.+)$', re.IGNORECASE),
+        # Wawa 1v1 results:
+        #   WW;;GUID_w;Name_w;GUID_l;Name_l
+        #   LL;;GUID_l;Name_l;GUID_w;Name_w
+        re.compile(r'^(?P<action>WW|LL);;(?P<data>.+)$', re.IGNORECASE),
+
 
         # suicides (cod4/cod5)
         re.compile(r'^(?P<action>[A-Z]);'
@@ -527,16 +532,21 @@ class CodParser(AbstractParser):
         return None
     
     def OnW(self, action, data, match=None):
-        return self._handle_match_wl('W', match)
+        # Team/DM winners (variable # of players)
+        return self._handle_match_wl('W', match.group('data'))
 
     def OnL(self, action, data, match=None):
-        return self._handle_match_wl('L', match)
+        # Team/DM losers (variable # of players)
+        return self._handle_match_wl('L', match.group('data'))
 
     def OnWW(self, action, data, match=None):
-        return self._handle_wawa('WW', match)
+        # Wawa winner line
+        return self._handle_wawa('WW', match.group('data'))
 
     def OnLL(self, action, data, match=None):
-        return self._handle_wawa('LL', match)
+        # Wawa loser line
+        return self._handle_wawa('LL', match.group('data'))
+
 
     
     ####################################################################################################################
@@ -820,70 +830,86 @@ class CodParser(AbstractParser):
                 sp.auth()
 
     def _current_map_and_mode(self):
-        mapname  = getattr(self.game, 'mapName', '') or ''
-        gametype = getattr(self.game, 'gameType', '') or ''
-        return mapname, gametype
+    mapname  = getattr(self.game, 'mapName', '') or ''
+    gametype = getattr(self.game, 'gameType', '') or ''
+    return mapname, gametype
 
-    def _handle_match_wl(self, wl, match):
-        """
-        Handles team/DM per-match lines:
-          W;axis;GUID;Name;GUID;Name;...    (team can be 'allies','axis', or '' for DM)
-          L;;GUID;Name;GUID;Name;...        (DM example)
-        Emits 'match_win' or 'match_loss' once per listed player.
-        """
-        team = (match.group('team') or '').lower()
-        rest = match.group('rest')
-        mapname, gametype = self._current_map_and_mode()
-
-        action_name = 'match_win' if wl == 'W' else 'match_loss'
-        extra = {'map': mapname, 'gametype': gametype, 'team': team}
-
-        for name, guid in self._pairs_guid_name(rest):
-            self._emit_action_for_player(action_name, name, guid, extra=extra)
-
-        return None
-
-    def _handle_wawa(self, wwll, match):
-        """
-        Handles Wawa 1v1 lines (GUID->NAME order):
-          WW;;GUID_w;Name_w;GUID_l;Name_l
-          LL;;GUID_l;Name_l;GUID_w;Name_w
-        Emits 'wawa_win' and 'wawa_loss' with opponent info.
-        """
-        rest = match.group('rest')
-        mapname, gametype = self._current_map_and_mode()
-        pairs = self._pairs_guid_name(rest)
-
-        if len(pairs) < 2:
-            # If only one player parsed, emit at least one side without opponent info
-            if len(pairs) == 1:
-                name, guid = pairs[0]
-                action_name = 'wawa_win' if wwll == 'WW' else 'wawa_loss'
-                self._emit_action_for_player(action_name, name, guid, extra={'map': mapname, 'gametype': gametype})
-            return None
-
-        (name1, guid1), (name2, guid2) = pairs[0], pairs[1]
-        if wwll == 'WW':
-            # first pair is winner; second is loser
-            self._emit_action_for_player(
-                'wawa_win',  name1, guid1,
-                extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2}
-            )
-            self._emit_action_for_player(
-                'wawa_loss', name2, guid2,
-                extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1}
-            )
+def _pairs_guid_name(self, rest):
+    """
+    Convert 'GUID;Name;GUID;Name;...' into [(name, guid), ...].
+    Names may contain spaces/color codes; they never contain semicolons.
+    """
+    toks = rest.split(';')
+    pairs = []
+    i = 0
+    while i + 1 < len(toks):
+        guid = toks[i].strip()
+        name = toks[i+1]  # keep color codes and inner spaces
+        if guid.isdigit() and name != '':
+            pairs.append((name, guid))
+            i += 2
         else:
-            # LL: first pair is loser; second is winner
-            self._emit_action_for_player(
-                'wawa_loss', name1, guid1,
-                extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2}
-            )
-            self._emit_action_for_player(
-                'wawa_win',  name2, guid2,
-                extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1}
-            )
+            i += 1  # try to realign if malformed
+    return pairs
+
+def _emit_action_for_player(self, action_name, name, guid, extra=None):
+    client = self.clients.getByGUID(guid)
+    payload = {'action': action_name, 'guid': guid, 'name': name}
+    if extra:
+        payload.update(extra)
+    self.queueEvent(self.getEvent(b3.events.EVT_CLIENT_ACTION, data=payload, client=client))
+
+def _handle_match_wl(self, wl, data_str):
+    """
+    data_str examples:
+      'axis;957796;NameA;914445;NameB;...'      (team modes)
+      ';957796;NameA;914445;NameB;...'          (DM: blank team => leading ';')
+    """
+    # Split out team (may be blank) and the remaining GUID/Name pairs
+    if data_str.startswith(';'):
+        team = ''
+        rest = data_str[1:]
+    else:
+        team, _, rest = data_str.partition(';')  # team ; <rest>
+        team = team.lower()
+
+    mapname, gametype = self._current_map_and_mode()
+    action_name = 'match_win' if wl == 'W' else 'match_loss'
+    extra = {'map': mapname, 'gametype': gametype, 'team': team}
+
+    for name, guid in self._pairs_guid_name(rest):
+        self._emit_action_for_player(action_name, name, guid, extra=extra)
+    return None
+
+def _handle_wawa(self, wwll, rest):
+    """
+    rest examples:
+      'GUID_w;Name_w;GUID_l;Name_l'   (for WW)
+      'GUID_l;Name_l;GUID_w;Name_w'   (for LL)
+    """
+    mapname, gametype = self._current_map_and_mode()
+    pairs = self._pairs_guid_name(rest)
+
+    if len(pairs) < 2:
+        if len(pairs) == 1:
+            name, guid = pairs[0]
+            action_name = 'wawa_win' if wwll == 'WW' else 'wawa_loss'
+            self._emit_action_for_player(action_name, name, guid, extra={'map': mapname, 'gametype': gametype})
         return None
+
+    (name1, guid1), (name2, guid2) = pairs[0], pairs[1]
+    if wwll == 'WW':
+        self._emit_action_for_player('wawa_win',  name1, guid1,
+                                     extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2})
+        self._emit_action_for_player('wawa_loss', name2, guid2,
+                                     extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1})
+    else:
+        self._emit_action_for_player('wawa_loss', name1, guid1,
+                                     extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2})
+        self._emit_action_for_player('wawa_win',  name2, guid2,
+                                     extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1})
+    return None
+
 
 #--LogLineFormats---------------------------------------------------------------
 
