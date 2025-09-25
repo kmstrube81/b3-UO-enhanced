@@ -830,85 +830,85 @@ class CodParser(AbstractParser):
                 sp.auth()
 
     def _current_map_and_mode(self):
-    mapname  = getattr(self.game, 'mapName', '') or ''
-    gametype = getattr(self.game, 'gameType', '') or ''
-    return mapname, gametype
+        mapname  = getattr(self.game, 'mapName', '') or ''
+        gametype = getattr(self.game, 'gameType', '') or ''
+        return mapname, gametype
 
-def _pairs_guid_name(self, rest):
-    """
-    Convert 'GUID;Name;GUID;Name;...' into [(name, guid), ...].
-    Names may contain spaces/color codes; they never contain semicolons.
-    """
-    toks = rest.split(';')
-    pairs = []
-    i = 0
-    while i + 1 < len(toks):
-        guid = toks[i].strip()
-        name = toks[i+1]  # keep color codes and inner spaces
-        if guid.isdigit() and name != '':
-            pairs.append((name, guid))
-            i += 2
+    def _pairs_guid_name(self, rest):
+        """
+        Convert 'GUID;Name;GUID;Name;...' into [(name, guid), ...].
+        Names may contain spaces/color codes; they never contain semicolons.
+        """
+        toks = rest.split(';')
+        pairs = []
+        i = 0
+        while i + 1 < len(toks):
+            guid = toks[i].strip()
+            name = toks[i+1]  # keep color codes and inner spaces
+            if guid.isdigit() and name != '':
+                pairs.append((name, guid))
+                i += 2
+            else:
+                i += 1  # try to realign if malformed
+        return pairs
+
+    def _emit_action_for_player(self, action_name, name, guid, extra=None):
+        client = self.clients.getByGUID(guid)
+        payload = {'action': action_name, 'guid': guid, 'name': name}
+        if extra:
+            payload.update(extra)
+        self.queueEvent(self.getEvent(b3.events.EVT_CLIENT_ACTION, data=payload, client=client))
+
+    def _handle_match_wl(self, wl, data_str):
+        """
+        data_str examples:
+          'axis;957796;NameA;914445;NameB;...'      (team modes)
+          ';957796;NameA;914445;NameB;...'          (DM: blank team => leading ';')
+        """
+        # Split out team (may be blank) and the remaining GUID/Name pairs
+        if data_str.startswith(';'):
+            team = ''
+            rest = data_str[1:]
         else:
-            i += 1  # try to realign if malformed
-    return pairs
+            team, _, rest = data_str.partition(';')  # team ; <rest>
+            team = team.lower()
 
-def _emit_action_for_player(self, action_name, name, guid, extra=None):
-    client = self.clients.getByGUID(guid)
-    payload = {'action': action_name, 'guid': guid, 'name': name}
-    if extra:
-        payload.update(extra)
-    self.queueEvent(self.getEvent(b3.events.EVT_CLIENT_ACTION, data=payload, client=client))
+        mapname, gametype = self._current_map_and_mode()
+        action_name = 'match_win' if wl == 'W' else 'match_loss'
+        extra = {'map': mapname, 'gametype': gametype, 'team': team}
 
-def _handle_match_wl(self, wl, data_str):
-    """
-    data_str examples:
-      'axis;957796;NameA;914445;NameB;...'      (team modes)
-      ';957796;NameA;914445;NameB;...'          (DM: blank team => leading ';')
-    """
-    # Split out team (may be blank) and the remaining GUID/Name pairs
-    if data_str.startswith(';'):
-        team = ''
-        rest = data_str[1:]
-    else:
-        team, _, rest = data_str.partition(';')  # team ; <rest>
-        team = team.lower()
-
-    mapname, gametype = self._current_map_and_mode()
-    action_name = 'match_win' if wl == 'W' else 'match_loss'
-    extra = {'map': mapname, 'gametype': gametype, 'team': team}
-
-    for name, guid in self._pairs_guid_name(rest):
-        self._emit_action_for_player(action_name, name, guid, extra=extra)
-    return None
-
-def _handle_wawa(self, wwll, rest):
-    """
-    rest examples:
-      'GUID_w;Name_w;GUID_l;Name_l'   (for WW)
-      'GUID_l;Name_l;GUID_w;Name_w'   (for LL)
-    """
-    mapname, gametype = self._current_map_and_mode()
-    pairs = self._pairs_guid_name(rest)
-
-    if len(pairs) < 2:
-        if len(pairs) == 1:
-            name, guid = pairs[0]
-            action_name = 'wawa_win' if wwll == 'WW' else 'wawa_loss'
-            self._emit_action_for_player(action_name, name, guid, extra={'map': mapname, 'gametype': gametype})
+        for name, guid in self._pairs_guid_name(rest):
+            self._emit_action_for_player(action_name, name, guid, extra=extra)
         return None
 
-    (name1, guid1), (name2, guid2) = pairs[0], pairs[1]
-    if wwll == 'WW':
-        self._emit_action_for_player('wawa_win',  name1, guid1,
-                                     extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2})
-        self._emit_action_for_player('wawa_loss', name2, guid2,
-                                     extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1})
-    else:
-        self._emit_action_for_player('wawa_loss', name1, guid1,
-                                     extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2})
-        self._emit_action_for_player('wawa_win',  name2, guid2,
-                                     extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1})
-    return None
+    def _handle_wawa(self, wwll, rest):
+        """
+        rest examples:
+          'GUID_w;Name_w;GUID_l;Name_l'   (for WW)
+          'GUID_l;Name_l;GUID_w;Name_w'   (for LL)
+        """
+        mapname, gametype = self._current_map_and_mode()
+        pairs = self._pairs_guid_name(rest)
+
+        if len(pairs) < 2:
+            if len(pairs) == 1:
+                name, guid = pairs[0]
+                action_name = 'wawa_win' if wwll == 'WW' else 'wawa_loss'
+                self._emit_action_for_player(action_name, name, guid, extra={'map': mapname, 'gametype': gametype})
+            return None
+
+        (name1, guid1), (name2, guid2) = pairs[0], pairs[1]
+        if wwll == 'WW':
+            self._emit_action_for_player('wawa_win',  name1, guid1,
+                                         extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2})
+            self._emit_action_for_player('wawa_loss', name2, guid2,
+                                         extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1})
+        else:
+            self._emit_action_for_player('wawa_loss', name1, guid1,
+                                         extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2})
+            self._emit_action_for_player('wawa_win',  name2, guid2,
+                                         extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1})
+        return None
 
 
 #--LogLineFormats---------------------------------------------------------------
