@@ -486,6 +486,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         """
         Handle EVT_GAME_ROUND_START
         """
+        
         # disable k/d counting if minimum players are not met
         self.checkMinPlayers(_roundstart=True)
         self.roundstart()
@@ -1518,7 +1519,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
                 #self._last_roundtime = self.console.game._roundTimeStart
         
         #echo whether its ranked or not during game start
-        self.debug('xlrstats: current gamemode = %r' % self._current_gametype)
+        self.debug('xlrstats: current gamemode = %r' % self.console.game.gameType)
         
         mapstats = self.get_MapStats(self.console.game.mapName)
         if mapstats:

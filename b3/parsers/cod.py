@@ -540,6 +540,7 @@ class CodParser(AbstractParser):
         return self._handle_match_wl('L', match.group('data'))
 
     def OnWW(self, action, data, match=None):
+        self.debug('obvious log tell that wawa win is matching')
         # Wawa winner line
         return self._handle_wawa('WW', match.group('data'))
 
@@ -681,12 +682,12 @@ class CodParser(AbstractParser):
                 i += 1
         return pairs
 
-    def _emit_action_for_player(self, action_name, name, guid, extra=None):
-        client = self.clients.getByGUID(guid)
-        payload = {'action': action_name, 'guid': guid, 'name': name}
-        if extra:
-            payload.update(extra)
-        self.queueEvent(self.getEvent(b3.events.EVT_CLIENT_ACTION, data=payload, client=client))
+    #def _emit_action_for_player(self, action_name, name, guid, extra=None):
+    #    client = self.clients.getByGUID(guid)
+    #    payload = {'action': action_name, 'guid': guid, 'name': name}
+    #    if extra:
+    #        payload.update(extra)
+    #    self.queueEvent(self.getEvent(b3.events.EVT_CLIENT_ACTION, data=payload, client=client))
     
     ####################################################################################################################
     #                                                                                                                  #
