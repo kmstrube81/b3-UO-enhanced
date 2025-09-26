@@ -494,12 +494,23 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         """
         Handle EVT_CLIENT_ACTION
         """
-        if self._xlrstats_active and self.console.game.gameType not in self.unranked_modes:
-            data = event.data
-            if isinstance(data, dict) and 'action' in data:
-                self._handleMatchAction(event.client, data)
-                return
-            self.action(event.client, event.data)
+        ranked_ok = (self._xlrstats_active and self.console.game.gameType not in self.unranked_modes)
+        self.debug("onAction gate: active=%s gametype=%r unranked=%r ranked_ok=%s",
+                   self._xlrstats_active, self.console.game.gameType, sorted(self.unranked_modes), ranked_ok)
+
+        if not ranked_ok:
+            return
+
+        data = event.data
+        if isinstance(data, dict) and 'action' in data:
+            self.debug("onAction got match payload: action=%s guid=%s name=%r client_id=%s",
+                       data.get('action'), data.get('guid'), data.get('name'),
+                       getattr(event.client, 'id', None))
+            self._handleMatchAction(event.client, data)
+            return
+
+        self.action(event.client, event.data)
+
 
     ####################################################################################################################
     #                                                                                                                  #
@@ -509,63 +520,80 @@ class XlrstatsPlugin(b3.plugin.Plugin):
     
     
     def _handleMatchAction(self, client, payload):
-        """
-        payload: {
-          'action': 'match_win'|'match_loss'|'wawa_win'|'wawa_loss',
-          'guid': '...', 'name': '...',
-          'map': 'mp_xxx', 'gametype': 'dm/tdm/...',        # optional but present from parser
-          'team': 'allies'|'axis'|'' ,                      # optional
-          'opponent_guid': '...', 'opponent_name': '...'    # Wawa only
-        }
-        """
-        action = (payload.get('action') or '').lower()
-        if action not in ('match_win', 'match_loss', 'wawa_win', 'wawa_loss'):
+    action = (payload.get('action') or '').lower()
+    if action not in ('match_win', 'match_loss', 'wawa_win', 'wawa_loss'):
+        return
+
+    # Drop if client not resolved — prevents WORLD row updates
+    if client is None or client.id is None:
+        self.debug("MatchAction DROP: could not resolve client for guid=%s name=%r (action=%s)",
+                   payload.get('guid'), payload.get('name'), action)
+        return
+
+    self.debug("MatchAction start: action=%s player_client_id=%s map=%r gametype=%r team=%r opp_guid=%r",
+               action, client.id, payload.get('map'), payload.get('gametype'),
+               payload.get('team'), payload.get('opponent_guid'))
+
+    playerstats = self.get_PlayerStats(client)
+    if playerstats is None:
+        self.debug("MatchAction DROP: no playerstats for client_id=%s", client.id)
+        return
+    if hasattr(playerstats, '_new'):
+        self.save_Stat(playerstats)
+
+    # --- 1) xlr_playerstats ---
+    if action == 'match_win':
+        cur = self.query("UPDATE %s SET wins = COALESCE(wins,0)+1 WHERE client_id = %%s" % self.playerstats_table,
+                         [playerstats.client_id])
+        self.debug("playerstats wins++ rows=%s for client_id=%s", getattr(cur, 'rowcount', None), playerstats.client_id)
+    elif action == 'match_loss':
+        cur = self.query("UPDATE %s SET losses = COALESCE(losses,0)+1 WHERE client_id = %%s" % self.playerstats_table,
+                         [playerstats.client_id])
+        self.debug("playerstats losses++ rows=%s for client_id=%s", getattr(cur, 'rowcount', None), playerstats.client_id)
+    elif action == 'wawa_win':
+        cur = self.query("UPDATE %s SET wawa_wins = COALESCE(wawa_wins,0)+1 WHERE client_id = %%s" % self.playerstats_table,
+                         [playerstats.client_id])
+        self.debug("playerstats wawa_wins++ rows=%s for client_id=%s", getattr(cur, 'rowcount', None), playerstats.client_id)
+    elif action == 'wawa_loss':
+        cur = self.query("UPDATE %s SET wawa_losses = COALESCE(wawa_losses,0)+1 WHERE client_id = %%s" % self.playerstats_table,
+                         [playerstats.client_id])
+        self.debug("playerstats wawa_losses++ rows=%s for client_id=%s", getattr(cur, 'rowcount', None), playerstats.client_id)
+
+    # --- 2) xlr_playermaps (only match W/L) ---
+    if action in ('match_win', 'match_loss'):
+        mapstats = self.get_MapStats(self.console.game.mapName)
+        if mapstats and hasattr(mapstats, '_new'):
+            self.save_Stat(mapstats)
+        if mapstats:
+            playermap = self.get_PlayerMaps(playerstats.id, mapstats.id)
+            if playermap and hasattr(playermap, '_new'):
+                self.save_Stat(playermap)
+            col = 'wins' if action == 'match_win' else 'losses'
+            cur = self.query("UPDATE %s SET %s = COALESCE(%s,0)+1 WHERE player_id = %%s AND map_id = %%s"
+                             % (self.playermaps_table, col, col), [playerstats.id, mapstats.id])
+            self.debug("playermaps %s++ rows=%s (player_id=%s map_id=%s)", col, getattr(cur, 'rowcount', None),
+                       playerstats.id, mapstats.id)
+
+    # --- 3) xlr_opponents (only Wawa) ---
+    if action in ('wawa_win', 'wawa_loss'):
+        opp_guid = payload.get('opponent_guid')
+        opp_name = payload.get('opponent_name') or ''
+        if not opp_guid:
+            self.debug("wawa: no opponent_guid in payload; skip opponents table")
             return
-
-        # ensure playerstats row exists
-        playerstats = self.get_PlayerStats(client)
-        if playerstats is None:
+        opp_id = self._get_or_create_client_id(opp_guid, opp_name)
+        if not opp_id:
+            self.debug("wawa: could not resolve/create opponent id for guid=%s", opp_guid)
             return
-        if hasattr(playerstats, '_new'):
-            self.save_Stat(playerstats)
+        self._ensure_opponent_row(playerstats.id, opp_id)
+        col = 'wawa_wins' if action == 'wawa_win' else 'wawa_losses'
+        cur = self.query("UPDATE %s SET %s = COALESCE(%s,0)+1 WHERE killer_id = %%s AND target_id = %%s"
+                         % (self.opponents_table, col, col), [playerstats.id, opp_id])
+        self.debug("opponents %s++ rows=%s (killer_id=%s target_id=%s)", col, getattr(cur, 'rowcount', None),
+                   playerstats.id, opp_id)
 
-        # --- 1) Update xlr_playerstats -------------------------
-        if action == 'match_win':
-            self.query("UPDATE %s SET wins = COALESCE(wins,0)+1 WHERE client_id = %%s" % self.playerstats_table, [playerstats.client_id])
-        elif action == 'match_loss':
-            self.query("UPDATE %s SET losses = COALESCE(losses,0)+1 WHERE client_id = %%s" % self.playerstats_table, [playerstats.client_id])
-        elif action == 'wawa_win':
-            self.query("UPDATE %s SET wawa_wins = COALESCE(wawa_wins,0)+1 WHERE client_id = %%s" % self.playerstats_table, [playerstats.client_id])
-        elif action == 'wawa_loss':
-            self.query("UPDATE %s SET wawa_losses = COALESCE(wawa_losses,0)+1 WHERE client_id = %%s" % self.playerstats_table, [playerstats.client_id])
+    self.debug("MatchAction done: action=%s player_client_id=%s", action, client.id)
 
-        # --- 2) Update xlr_playermaps (match W/L only) --------
-        if action in ('match_win', 'match_loss'):
-            # mapstats row (ensures map_id)
-            mapstats = self.get_MapStats(self.console.game.mapName)
-            if mapstats and hasattr(mapstats, '_new'):
-                self.save_Stat(mapstats)
-            if mapstats:
-                playermap = self.get_PlayerMaps(playerstats.id, mapstats.id)
-                if playermap and hasattr(playermap, '_new'):
-                    self.save_Stat(playermap)
-                col = 'wins' if action == 'match_win' else 'losses'
-                self.query("UPDATE %s SET %s = COALESCE(%s,0)+1 WHERE player_id = %%s AND map_id = %%s"
-                           % (self.playermaps_table, col, col), [playerstats.id, mapstats.id])
-
-        # --- 3) Update xlr_opponents head-to-head (Wawa only) -
-        if action in ('wawa_win', 'wawa_loss'):
-            opp_guid = payload.get('opponent_guid')
-            opp_name = payload.get('opponent_name') or ''
-            if opp_guid:
-                opp_id = self._get_or_create_client_id(opp_guid, opp_name)
-                if opp_id:
-                    # ensure row exists in opponents table (uses your existing schema killer_id/target_id)
-                    # we'll store Wawa W/L in the same row keyed as (killer_id=player_id, target_id=opponent_id)
-                    self._ensure_opponent_row(playerstats.id, opp_id)
-                    col = 'wawa_wins' if action == 'wawa_win' else 'wawa_losses'
-                    self.query("UPDATE %s SET %s = COALESCE(%s,0)+1 WHERE killer_id = %%s AND target_id = %%s"
-                               % (self.opponents_table, col, col), [playerstats.id, opp_id])
 
     def _get_or_create_client_id(self, guid, name=''):
         # First try to resolve

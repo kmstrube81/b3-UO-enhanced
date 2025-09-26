@@ -857,7 +857,22 @@ class CodParser(AbstractParser):
         payload = {'action': action_name, 'guid': guid, 'name': name}
         if extra:
             payload.update(extra)
+
+        # DEBUG: show what we're about to emit and whether we resolved a client object
+        self.verbose(
+            "MATCHACTION emit: action=%s guid=%s name=%r client_resolved=%s map=%s gametype=%s team=%s opp_guid=%s",
+            action_name,
+            guid,
+            name,
+            getattr(client, 'id', None),
+            payload.get('map'),
+            payload.get('gametype'),
+            payload.get('team'),
+            payload.get('opponent_guid')
+        )
+
         self.queueEvent(self.getEvent(b3.events.EVT_CLIENT_ACTION, data=payload, client=client))
+
 
     def _handle_match_wl(self, wl, data_str):
         """
