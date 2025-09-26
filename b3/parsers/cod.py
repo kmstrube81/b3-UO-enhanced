@@ -539,12 +539,12 @@ class CodParser(AbstractParser):
         # Team/DM losers (variable # of players)
         return self._handle_match_wl('L', match.group('data'))
 
-    def OnWW(self, action, data, match=None):
+    def OnWw(self, action, data, match=None):
         self.debug('obvious log tell that wawa win is matching')
         # Wawa winner line
         return self._handle_wawa('WW', match.group('data'))
 
-    def OnLL(self, action, data, match=None):
+    def OnLl(self, action, data, match=None):
         # Wawa loser line
         return self._handle_wawa('LL', match.group('data'))
 
