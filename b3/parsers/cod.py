@@ -540,7 +540,6 @@ class CodParser(AbstractParser):
         return self._handle_match_wl('L', match.group('data'))
 
     def OnWw(self, action, data, match=None):
-        self.debug('obvious log tell that wawa win is matching')
         # Wawa winner line
         return self._handle_wawa('WW', match.group('data'))
 
@@ -859,19 +858,6 @@ class CodParser(AbstractParser):
         if extra:
             payload.update(extra)
 
-        # DEBUG: show what we're about to emit and whether we resolved a client object
-        self.debug(
-            "MATCHACTION emit: action=%s guid=%s name=%r client_resolved=%s map=%s gametype=%s team=%s opp_guid=%s",
-            action_name,
-            guid,
-            name,
-            getattr(client, 'id', None),
-            payload.get('map'),
-            payload.get('gametype'),
-            payload.get('team'),
-            payload.get('opponent_guid')
-        )
-
         self.queueEvent(self.getEvent(b3.events.EVT_CLIENT_ACTION, data=payload, client=client))
 
 
@@ -917,13 +903,9 @@ class CodParser(AbstractParser):
         if wwll == 'WW':
             self._emit_action_for_player('wawa_win',  name1, guid1,
                                          extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2})
-            self._emit_action_for_player('wawa_loss', name2, guid2,
-                                         extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1})
-        else:
+         else:
             self._emit_action_for_player('wawa_loss', name1, guid1,
                                          extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2})
-            self._emit_action_for_player('wawa_win',  name2, guid2,
-                                         extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid1, 'opponent_name': name1})
         return None
 
 
