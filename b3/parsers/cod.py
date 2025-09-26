@@ -903,7 +903,7 @@ class CodParser(AbstractParser):
         if wwll == 'WW':
             self._emit_action_for_player('wawa_win',  name1, guid1,
                                          extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2})
-         else:
+        else:
             self._emit_action_for_player('wawa_loss', name1, guid1,
                                          extra={'map': mapname, 'gametype': gametype, 'opponent_guid': guid2, 'opponent_name': name2})
         return None
