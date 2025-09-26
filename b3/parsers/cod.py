@@ -859,7 +859,7 @@ class CodParser(AbstractParser):
             payload.update(extra)
 
         # DEBUG: show what we're about to emit and whether we resolved a client object
-        self.verbose(
+        self.debug(
             "MATCHACTION emit: action=%s guid=%s name=%r client_resolved=%s map=%s gametype=%s team=%s opp_guid=%s",
             action_name,
             guid,

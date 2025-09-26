@@ -497,19 +497,20 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         ranked_ok = (self._xlrstats_active and self.console.game.gameType not in self.unranked_modes)
         self.debug("onAction gate: active=%s gametype=%r unranked=%r ranked_ok=%s",
                    self._xlrstats_active, self.console.game.gameType, sorted(self.unranked_modes), ranked_ok)
-
         if not ranked_ok:
             return
 
         data = event.data
         if isinstance(data, dict) and 'action' in data:
-            self.debug("onAction got match payload: action=%s guid=%s name=%r client_id=%s",
+            self.debug("onAction match payload: action=%s guid=%s name=%r client_id=%s",
                        data.get('action'), data.get('guid'), data.get('name'),
                        getattr(event.client, 'id', None))
             self._handleMatchAction(event.client, data)
             return
 
-        self.action(event.client, event.data)
+        # legacy string actions
+        self.action(event.client, data)
+
 
 
     ####################################################################################################################
@@ -524,9 +525,8 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         if action not in ('match_win', 'match_loss', 'wawa_win', 'wawa_loss'):
             return
 
-        # Drop if client not resolved — prevents WORLD row updates
         if client is None or client.id is None:
-            self.debug("MatchAction DROP: could not resolve client for guid=%s name=%r (action=%s)",
+            self.debug("MatchAction DROP: unresolved client for guid=%s name=%r (action=%s)",
                        payload.get('guid'), payload.get('name'), action)
             return
 
@@ -541,25 +541,21 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         if hasattr(playerstats, '_new'):
             self.save_Stat(playerstats)
 
-        # --- 1) xlr_playerstats ---
+        # 1) xlr_playerstats
         if action == 'match_win':
             cur = self.query("UPDATE %s SET wins = COALESCE(wins,0)+1 WHERE client_id = %%s" % self.playerstats_table,
-                             [playerstats.client_id])
-            self.debug("playerstats wins++ rows=%s for client_id=%s", getattr(cur, 'rowcount', None), playerstats.client_id)
+                             [playerstats.client_id]); self.debug("playerstats wins++ rows=%s", getattr(cur, 'rowcount', None))
         elif action == 'match_loss':
             cur = self.query("UPDATE %s SET losses = COALESCE(losses,0)+1 WHERE client_id = %%s" % self.playerstats_table,
-                             [playerstats.client_id])
-            self.debug("playerstats losses++ rows=%s for client_id=%s", getattr(cur, 'rowcount', None), playerstats.client_id)
+                             [playerstats.client_id]); self.debug("playerstats losses++ rows=%s", getattr(cur, 'rowcount', None))
         elif action == 'wawa_win':
             cur = self.query("UPDATE %s SET wawa_wins = COALESCE(wawa_wins,0)+1 WHERE client_id = %%s" % self.playerstats_table,
-                             [playerstats.client_id])
-            self.debug("playerstats wawa_wins++ rows=%s for client_id=%s", getattr(cur, 'rowcount', None), playerstats.client_id)
+                             [playerstats.client_id]); self.debug("playerstats wawa_wins++ rows=%s", getattr(cur, 'rowcount', None))
         elif action == 'wawa_loss':
             cur = self.query("UPDATE %s SET wawa_losses = COALESCE(wawa_losses,0)+1 WHERE client_id = %%s" % self.playerstats_table,
-                             [playerstats.client_id])
-            self.debug("playerstats wawa_losses++ rows=%s for client_id=%s", getattr(cur, 'rowcount', None), playerstats.client_id)
+                             [playerstats.client_id]); self.debug("playerstats wawa_losses++ rows=%s", getattr(cur, 'rowcount', None))
 
-        # --- 2) xlr_playermaps (only match W/L) ---
+        # 2) xlr_playermaps (team/DM only)
         if action in ('match_win', 'match_loss'):
             mapstats = self.get_MapStats(self.console.game.mapName)
             if mapstats and hasattr(mapstats, '_new'):
@@ -574,17 +570,16 @@ class XlrstatsPlugin(b3.plugin.Plugin):
                 self.debug("playermaps %s++ rows=%s (player_id=%s map_id=%s)", col, getattr(cur, 'rowcount', None),
                            playerstats.id, mapstats.id)
 
-        # --- 3) xlr_opponents (only Wawa) ---
+        # 3) xlr_opponents (Wawa only)
         if action in ('wawa_win', 'wawa_loss'):
             opp_guid = payload.get('opponent_guid')
             opp_name = payload.get('opponent_name') or ''
             if not opp_guid:
-                self.debug("wawa: no opponent_guid in payload; skip opponents table")
+                self.debug("wawa: no opponent_guid; skip opponents table")
                 return
             opp_id = self._get_or_create_client_id(opp_guid, opp_name)
             if not opp_id:
-                self.debug("wawa: could not resolve/create opponent id for guid=%s", opp_guid)
-                return
+                self.debug("wawa: could not resolve/create opponent id for guid=%s", opp_guid); return
             self._ensure_opponent_row(playerstats.id, opp_id)
             col = 'wawa_wins' if action == 'wawa_win' else 'wawa_losses'
             cur = self.query("UPDATE %s SET %s = COALESCE(%s,0)+1 WHERE killer_id = %%s AND target_id = %%s"
