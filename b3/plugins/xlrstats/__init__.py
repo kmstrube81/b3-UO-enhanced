@@ -569,7 +569,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
             self._ensure_opponent_row(playerstats.id, opp_id)
             col = 'wawa_wins' if action == 'wawa_win' else 'wawa_losses'
             cur = self.query("UPDATE %s SET %s = COALESCE(%s,0)+1 WHERE killer_id = %%s AND target_id = %%s"
-                             % (self.opponents_table, col, col), [opp.id, killer_id])
+                             % (self.opponents_table, col, col), [opp_id, killer_id])
 
 
     def _get_or_create_client_id(self, guid, name=''):
