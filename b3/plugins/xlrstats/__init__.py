@@ -395,12 +395,16 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         # playerstats: match W/L + Wawa W/L
         self._addTableColumn('wins',        self.playerstats_table, 'INT UNSIGNED NOT NULL DEFAULT 0')
         self._addTableColumn('losses',      self.playerstats_table, 'INT UNSIGNED NOT NULL DEFAULT 0')
+        self._addTableColumn('round_wins',  self.playerstats_table, 'INT UNSIGNED NOT NULL DEFAULT 0')
+        self._addTableColumn('round_losses',self.playerstats_table, 'INT UNSIGNED NOT NULL DEFAULT 0')
         self._addTableColumn('wawa_wins',   self.playerstats_table, 'INT UNSIGNED NOT NULL DEFAULT 0')
         self._addTableColumn('wawa_losses', self.playerstats_table, 'INT UNSIGNED NOT NULL DEFAULT 0')
 
         # playermaps: per-map match W/L
         self._addTableColumn('wins',        self.playermaps_table,  'INT UNSIGNED NOT NULL DEFAULT 0')
         self._addTableColumn('losses',      self.playermaps_table,  'INT UNSIGNED NOT NULL DEFAULT 0')
+        self._addTableColumn('round_wins',  self.playermaps_table,  'INT UNSIGNED NOT NULL DEFAULT 0')
+        self._addTableColumn('round_losses',self.playermaps_table,  'INT UNSIGNED NOT NULL DEFAULT 0')
 
         # opponents: head-to-head Wawa W/L (reuses your xlr_opponents table)
         self._addTableColumn('wawa_wins',   self.opponents_table,   'INT UNSIGNED NOT NULL DEFAULT 0')
@@ -518,7 +522,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
     
     def _handleMatchAction(self, client, payload):
         action = (payload.get('action') or '').lower()
-        if action not in ('match_win', 'match_loss', 'wawa_win', 'wawa_loss'):
+        if action not in ('match_win', 'match_loss', 'wawa_win', 'wawa_loss', 'round_win', 'round_loss'):
             return
 
         if client is None or client.id is None:
@@ -536,6 +540,12 @@ class XlrstatsPlugin(b3.plugin.Plugin):
                              [playerstats.client_id])
         elif action == 'match_loss':
             cur = self.query("UPDATE %s SET losses = COALESCE(losses,0)+1 WHERE client_id = %%s" % self.playerstats_table,
+                             [playerstats.client_id])
+        if action == 'round_win':
+            cur = self.query("UPDATE %s SET round_wins = COALESCE(round_wins,0)+1 WHERE client_id = %%s" % self.playerstats_table,
+                             [playerstats.client_id])
+        elif action == 'round_loss':
+            cur = self.query("UPDATE %s SET round_losses = COALESCE(round_losses,0)+1 WHERE client_id = %%s" % self.playerstats_table,
                              [playerstats.client_id])
         elif action == 'wawa_win':
             cur = self.query("UPDATE %s SET wawa_wins = COALESCE(wawa_wins,0)+1 WHERE client_id = %%s" % self.playerstats_table,
@@ -556,7 +566,17 @@ class XlrstatsPlugin(b3.plugin.Plugin):
                 col = 'wins' if action == 'match_win' else 'losses'
                 cur = self.query("UPDATE %s SET %s = COALESCE(%s,0)+1 WHERE player_id = %%s AND map_id = %%s"
                                  % (self.playermaps_table, col, col), [playerstats.id, mapstats.id])
-
+        elif action in ('round_win', 'round_loss'):
+            mapstats = self.get_MapStats(self.console.game.mapName)
+            if mapstats and hasattr(mapstats, '_new'):
+                self.save_Stat(mapstats)
+            if mapstats:
+                playermap = self.get_PlayerMaps(playerstats.id, mapstats.id)
+                if playermap and hasattr(playermap, '_new'):
+                    self.save_Stat(playermap)
+                col = 'round_wins' if action == 'round_win' else 'round_losses'
+                cur = self.query("UPDATE %s SET %s = COALESCE(%s,0)+1 WHERE player_id = %%s AND map_id = %%s"
+                                 % (self.playermaps_table, col, col), [playerstats.id, mapstats.id])
         # 3) xlr_opponents (Wawa only)
         if action in ('wawa_win', 'wawa_loss'):
             opp_guid = payload.get('opponent_guid')

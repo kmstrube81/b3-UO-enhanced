@@ -113,7 +113,11 @@ class CodParser(AbstractParser):
         #   WW;;GUID_w;Name_w;GUID_l;Name_l
         #   LL;;GUID_l;Name_l;GUID_w;Name_w
         re.compile(r'^(?P<action>WW|LL);;(?P<data>.+)$', re.IGNORECASE),
-
+        
+        # SD Round Wins
+        #   RW;axis|allies;GUID;Name;GUID;Name...
+        #   RL;axis|allies; GUID;Name;GUID;Name...
+        re.compile(r'^(?P<action>RW|RL);(?P<data>.+)$', re.IGNORECASE),
 
         # suicides (cod4/cod5)
         re.compile(r'^(?P<action>[A-Z]);'
@@ -538,7 +542,15 @@ class CodParser(AbstractParser):
     def OnL(self, action, data, match=None):
         # Team/DM losers (variable # of players)
         return self._handle_match_wl('L', match.group('data'))
+    
+    def OnRw(self, action, data, match=None):
+        # Round winners (variable # of players)
+        return self._handle_round_wl('RW', match.group('data'))
 
+    def OnRl(self, action, data, match=None):
+        # Round losers (variable # of players)
+        return self._handle_round_wl('RL', match.group('data'))
+    
     def OnWw(self, action, data, match=None):
         # Wawa winner line
         return self._handle_wawa('WW', match.group('data'))
@@ -877,6 +889,28 @@ class CodParser(AbstractParser):
 
         mapname, gametype = self._current_map_and_mode()
         action_name = 'match_win' if wl == 'W' else 'match_loss'
+        extra = {'map': mapname, 'gametype': gametype, 'team': team}
+
+        for name, guid in self._pairs_guid_name(rest):
+            self._emit_action_for_player(action_name, name, guid, extra=extra)
+        return None
+        
+    def _handle_round_wl(self, wl, data_str):
+        """
+        data_str examples:
+          'axis;957796;NameA;914445;NameB;...'      (team modes)
+          ';957796;NameA;914445;NameB;...'          (DM: blank team => leading ';')
+        """
+        # Split out team (may be blank) and the remaining GUID/Name pairs
+        if data_str.startswith(';'):
+            team = ''
+            rest = data_str[1:]
+        else:
+            team, _, rest = data_str.partition(';')  # team ; <rest>
+            team = team.lower()
+
+        mapname, gametype = self._current_map_and_mode()
+        action_name = 'round_win' if wl == 'RW' else 'round_loss'
         extra = {'map': mapname, 'gametype': gametype, 'team': team}
 
         for name, guid in self._pairs_guid_name(rest):
