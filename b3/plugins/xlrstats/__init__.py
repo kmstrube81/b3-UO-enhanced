@@ -138,6 +138,10 @@ class XlrstatsPlugin(b3.plugin.Plugin):
     playercards_callsign_col = 'callsign'
     playercards_updated_at_col = 'updated_at'   # if missing in your schema, we’ll just ignore ORDER BY
     default_playercard_background = 0
+    default_playercard_emblem = 7
+    default_playercard_callsign = 4
+    default_playercard_skill = "NA"
+    
 
     # default table name for the ctime subplugin
     ctime_table = 'ctime'
@@ -597,6 +601,26 @@ class XlrstatsPlugin(b3.plugin.Plugin):
             self.console.write('set playercard_%d_callsign %s' % (client.cid, int(cs)))
         except Exception, e:
             self.debug('failed to set playercard_%d_callsign: %s', client.cid, e)
+            
+        sk = None
+        try:
+            sk = getattr(player, 'skill', None)
+        except Exception:
+            sk = None
+
+        if sk is None:
+            sk = self.default_playercard_skill
+
+        # Round to 2 decimals and stringify safely
+        try:
+            sk_str = '%.2f' % float(sk)
+        except Exception:
+            sk_str = '%.2f' % float(self.default_playercard_skill)
+
+        try:
+            self.console.write('set playercard_%d_skill %s' % (client.cid, sk_str))
+        except Exception, e:
+            self.debug('failed to set playercard_%d_skill: %s', client.cid, e)
 
     
     def _handleMatchAction(self, client, payload):
