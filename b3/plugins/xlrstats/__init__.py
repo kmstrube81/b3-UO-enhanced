@@ -566,7 +566,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         
         try:
             # Try most-recent row if updated_at column exists; otherwise fallback without ORDER BY
-           if cU:
+            if cU:
                 sql = "SELECT %s AS bg, %s AS em, %s AS cs FROM %s WHERE %s = %%s ORDER BY %s DESC LIMIT 1" % (
                     cB, cE, cC, t, cP, cU
                 )
