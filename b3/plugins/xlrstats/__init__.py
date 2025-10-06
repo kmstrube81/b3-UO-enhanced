@@ -469,7 +469,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         self.checkMinPlayers()
         self.join(event.client)
         try:
-            self._set_playercard_background_for_client(event.client)
+            self._set_playercard_for_client(event.client)
         except Exception, e:
             self.debug('playercard background sync skipped for %s: %s', getattr(event.client, 'name', '?'), e)
 
