@@ -588,16 +588,19 @@ class XlrstatsPlugin(b3.plugin.Plugin):
 
         #Push dvars
         try:
+            self.console.write('set playercard_%s_background %s' % (client.cid, bg))
             self.debug('set playercard_%s_background %s', client.cid, bg)
         except Exception, e:
             self.debug('failed to set playercard_%s_background: %s', client.cid, e)
 
         try:
+            self.console.write('set playercard_%s_emblem %s' % (client.cid, em))
             self.debug('set playercard_%s_emblem %s', client.cid, em)
         except Exception, e:
             self.debug('failed to set playercard_%s_emblem: %s', client.cid, e)
 
         try:
+            self.console.write('set playercard_%s_callsign %s' % (client.cid, cs))
             self.debug('set playercard_%s_callsign %s', client.cid, cs)
         except Exception, e:
             self.debug('failed to set playercard_%d_callsign: %s', client.cid, e)
@@ -618,6 +621,7 @@ class XlrstatsPlugin(b3.plugin.Plugin):
             sk_str = '%.2f' % float(self.default_playercard_skill)
 
         try:
+            self.console.write('set playercard_%s_skill %s' % (client.cid, sk_str))
             self.debug('set playercard_%s_skill %s', client.cid, sk_str)
         except Exception, e:
             self.debug('failed to set playercard_%s_skill: %s', client.cid, e)
