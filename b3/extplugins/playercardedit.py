@@ -107,7 +107,7 @@ class PlayercardeditPlugin(b3.plugin.Plugin):
 
         # MySQL/MariaDB preferred path
         sql = (
-            "INSERT INTO {t} (client_id, callsign, background, emblem) "
+            "INSERT INTO {t} (player_id, callsign, background, emblem) "
             "VALUES (%s, %s, %s, %s) "
             "ON DUPLICATE KEY UPDATE "
             "  callsign=VALUES(callsign), "
