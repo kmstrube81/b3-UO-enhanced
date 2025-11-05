@@ -85,13 +85,15 @@ class PlayercardeditPlugin(b3.plugin.Plugin):
 
         self.debug('PlayercardEdit ready. Using table: %s; level >= %s', self._table_name, self._min_level)
 
-    def _validate_int(self, val):
-        # defensive integer parsing
+    def _validate_field(self, raw_val, minv, maxv):
+        """
+        parse int and ensure within [minv, maxv]; return None if invalid
+        """
         try:
-            n = int(val)
+            n = int(raw_val)
         except Exception:
             return None
-        if n < self._range_min or n > self._range_max:
+        if n < minv or n > maxv:
             return None
         return n
 
