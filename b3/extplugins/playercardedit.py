@@ -17,7 +17,7 @@ from b3.functions import getCmd
 __version__ = '1.0.0'
 __author__  = 'ChatGPT'
 
-class playercardeditPlugin(b3.plugin.Plugin):
+class PlayercardeditPlugin(b3.plugin.Plugin):
 
     # Defaults (can be overridden in plugin XML)
     _table_name = 'xlr_playercard'
