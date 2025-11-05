@@ -19,7 +19,7 @@ __author__  = 'ChatGPT'
 
 class PlayercardeditPlugin(b3.plugin.Plugin):
 
-    requiresConfigFile = false
+    requiresConfigFile = False
 
     # Defaults (can be overridden in plugin XML)
     _table_name = 'xlr_playercard'
