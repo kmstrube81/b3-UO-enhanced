@@ -1,7 +1,7 @@
 <configuration plugin="playercardedit">
   <settings name="settings">
     <!-- Table to write to -->
-    <set name="table_name">xlr_playercard</set>
+    <set name="table_name">xlr_playercards</set>
 
     <!-- Minimum level required to run the command (0 = guest) -->
     <set name="min_level">0</set>

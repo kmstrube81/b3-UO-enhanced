@@ -22,7 +22,7 @@ class PlayercardeditPlugin(b3.plugin.Plugin):
     requiresConfigFile = False
 
     # Defaults (can be overridden in plugin XML)
-    _table_name = 'xlr_playercard'
+    _table_name = 'xlr_playercards'
     _min_level  = 0  # 0=guest; raise if you want to restrict
     _callsign_min  = 0
     _callsign_max  = 9999
