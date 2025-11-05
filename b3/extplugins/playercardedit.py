@@ -19,11 +19,17 @@ __author__  = 'ChatGPT'
 
 class PlayercardeditPlugin(b3.plugin.Plugin):
 
+    requiresConfigFile = false
+
     # Defaults (can be overridden in plugin XML)
     _table_name = 'xlr_playercard'
     _min_level  = 0  # 0=guest; raise if you want to restrict
-    _range_min  = 0
-    _range_max  = 9999
+    _callsign_min  = 0
+    _callsign_max  = 9999
+    _background_min  = 0
+    _background_max  = 9999
+    _emblem_min  = 0
+    _emblem_max  = 9999
 
     def onLoadConfig(self):
         # Read optional settings from plugin config
@@ -35,12 +41,33 @@ class PlayercardeditPlugin(b3.plugin.Plugin):
             self._min_level = self.config.getint('settings', 'min_level')
         except Exception:
             pass
+        # callsign
         try:
-            self._range_min = self.config.getint('settings', 'range_min')
+            self._callsign_min = self.config.getint('settings', 'callsign_min')
         except Exception:
             pass
         try:
-            self._range_max = self.config.getint('settings', 'range_max')
+            self._callsign_max = self.config.getint('settings', 'callsign_max')
+        except Exception:
+            pass
+
+        # background
+        try:
+            self._background_min = self.config.getint('settings', 'background_min')
+        except Exception:
+            pass
+        try:
+            self._background_max = self.config.getint('settings', 'background_max')
+        except Exception:
+            pass
+
+        # emblem
+        try:
+            self._emblem_min = self.config.getint('settings', 'emblem_min')
+        except Exception:
+            pass
+        try:
+            self._emblem_max = self.config.getint('settings', 'emblem_max')
         except Exception:
             pass
 
@@ -53,8 +80,7 @@ class PlayercardeditPlugin(b3.plugin.Plugin):
 
         # register command: !editplayercard
         self._adminPlugin.registerCommand(
-            self, 'editplayercard', self._min_level, self.cmd_editplayercard,
-            help='edit your playercard: ^3!editplayercard <callsign> <background> <emblem>'
+            self, 'editplayercard', self._min_level, self.cmd_editplayercard
         )
 
         self.debug('PlayercardEdit ready. Using table: %s; level >= %s', self._table_name, self._min_level)
@@ -117,18 +143,31 @@ class PlayercardeditPlugin(b3.plugin.Plugin):
 
         raw_callsign, raw_background, raw_emblem = parts
 
-        callsign   = self._validate_int(raw_callsign)
-        background = self._validate_int(raw_background)
-        emblem     = self._validate_int(raw_emblem)
-
-        if callsign is None or background is None or emblem is None:
-            client.message('^1Invalid values.^7 Each must be an integer in range ^3{0}-{1}^7.'.format(self._range_min, self._range_max))
+        callsign = self._validate_field(raw_callsign, self._callsign_min, self._callsign_max)
+        if callsign is None:
+            client.message(
+                '^1Invalid callsign.^7 Must be %d-%d.' % (self._callsign_min, self._callsign_max)
+            )
             return
 
+        background = self._validate_field(raw_background, self._background_min, self._background_max)
+        if background is None:
+            client.message(
+                '^1Invalid background.^7 Must be %d-%d.' % (self._background_min, self._background_max)
+            )
+            return
+
+        emblem = self._validate_field(raw_emblem, self._emblem_min, self._emblem_max)
+        if emblem is None:
+            client.message(
+                '^1Invalid emblem.^7 Must be %d-%d.' % (self._emblem_min, self._emblem_max)
+            )
+            return
+            
         # perform DB write
         ok = self._do_upsert(client.id, callsign, background, emblem)
         if ok:
             client.message('^7Playercard updated: ^3callsign={0} ^7background={1} ^7emblem={2}'.format(callsign, background, emblem))
             self.verbose('Updated playercard for client_id=%s -> (%s,%s,%s)', client.id, callsign, background, emblem)
         else:
-            client.message('^1Failed to update playercard. Check server logs.')
+            client.message('^1Failed to update playercard.')

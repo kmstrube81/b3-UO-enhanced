@@ -7,8 +7,11 @@
     <set name="min_level">0</set>
 
     <!-- Allowed value range for callsign/background/emblem -->
-    <set name="range_min">0</set>
-    <set name="range_max">9999</set>
-
+    <set name="callsign_min">0</set>
+    <set name="callsign_max">19</set>
+	<set name="background_min">0</set>
+    <set name="background_max">4</set>
+	<set name="emblem_min">0</set>
+    <set name="emblem_max">48</set>
   </settings>
 </configuration>
