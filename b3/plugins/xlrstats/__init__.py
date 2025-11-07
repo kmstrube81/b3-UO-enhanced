@@ -138,9 +138,9 @@ class XlrstatsPlugin(b3.plugin.Plugin):
     playercards_callsign_col = 'callsign'
     playercards_updated_at_col = 'updated_at'   # if missing in your schema, we’ll just ignore ORDER BY
     default_playercard_background = 0
-    default_playercard_emblem = 7
-    default_playercard_callsign = 4
-    default_playercard_skill = "NA"
+    default_playercard_emblem = 0
+    default_playercard_callsign = 0
+    default_playercard_skill = 0
     
 
     # default table name for the ctime subplugin
@@ -560,9 +560,9 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         cC = self.playercards_callsign_col
         cU = self.playercards_updated_at_col
 
-        bg = None
-        em = None
-        cs = None
+        bg = self.default_playercard_background
+        em = self.default_playercard_emblem
+        cs = self.default_playercard_callsign
         
         try:
             # Try most-recent row if updated_at column exists; otherwise fallback without ORDER BY
@@ -574,8 +574,8 @@ class XlrstatsPlugin(b3.plugin.Plugin):
                 sql = "SELECT %s AS bg, %s AS em, %s AS cs FROM %s WHERE %s = %%s LIMIT 1" % (
                     cB, cE, cC, t, cP
                 )
-                
-            cur = self.query(sql, [player.id])
+
+            cur = self.query(sql, [player.client_id])
             if cur and not cur.EOF:
                 row = cur.getRow()
                 # row may be dict-like depending on storage backend
@@ -625,6 +625,30 @@ class XlrstatsPlugin(b3.plugin.Plugin):
             self.debug('set playercard_%s_skill %s', client.cid, sk_str)
         except Exception, e:
             self.debug('failed to set playercard_%s_skill: %s', client.cid, e)
+            
+        ks = None
+        try:
+            ks = getattr(player, 'kills', None)
+        except Exception:
+            ks = None
+
+        try:
+            self.console.write('set playercard_%s_kills %s' % (client.cid, ks))
+            self.debug('set playercard_%s_kills %s', client.cid, ks)
+        except Exception, e:
+            self.debug('failed to set playercard_%s_kills: %s', client.cid, e)
+            
+        ds = None
+        try:
+            ds = getattr(player, 'deaths', None)
+        except Exception:
+            ds = None
+
+        try:
+            self.console.write('set playercard_%s_deaths %s' % (client.cid, ds))
+            self.debug('set playercard_%s_deaths %s', client.cid, ds)
+        except Exception, e:
+            self.debug('failed to set playercard_%s_deaths: %s', client.cid, e)
 
     
     def _handleMatchAction(self, client, payload):

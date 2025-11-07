@@ -83,8 +83,57 @@ class PlayercardeditPlugin(b3.plugin.Plugin):
             self, 'editplayercard', self._min_level, self.cmd_editplayercard
         )
 
-        self.debug('PlayercardEdit ready. Using table: %s; level >= %s', self._table_name, self._min_level)
+        self.registerEvent('EVT_PLAYERCARD_EDIT')
+        
+        self.debug(
+            'PlayercardEdit ready. table=%s, callsign[%d-%d], background[%d-%d], emblem[%d-%d]',
+            self._table_name,
+            self._callsign_min, self._callsign_max,
+            self._background_min, self._background_max,
+            self._emblem_min, self._emblem_max
+        )
+    
+     # ---- event hook ---------------------------------------------------------
+    def onEvent(self, event):
+        if event.type == self.console.getEventID('EVT_PLAYERCARD_EDIT'):
+            data = event.data or {}
+            client = event.client
+            if not client:
+                return
+            callsign   = data.get('callsign')
+            background = data.get('background')
+            emblem     = data.get('emblem')
+            
+            callsign = self._validate_field(callsign, self._callsign_min, self._callsign_max)
+            if callsign is None:
+                client.message(
+                    '^1Invalid callsign.^7 Must be %d-%d.' % (self._callsign_min, self._callsign_max)
+                )
+                return
 
+            background = self._validate_field(background, self._background_min, self._background_max)
+            if background is None:
+                client.message(
+                    '^1Invalid background.^7 Must be %d-%d.' % (self._background_min, self._background_max)
+                )
+                return
+
+            emblem = self._validate_field(emblem, self._emblem_min, self._emblem_max)
+            if emblem is None:
+                client.message(
+                    '^1Invalid emblem.^7 Must be %d-%d.' % (self._emblem_min, self._emblem_max)
+                )
+                return
+                
+            # perform DB write
+            ok = self._do_upsert(client, callsign, background, emblem)
+            if ok:
+                client.message('^7Playercard updated: ^3callsign={0} ^7background={1} ^7emblem={2}'.format(callsign, background, emblem))
+                self.verbose('Updated playercard for client_id=%s -> (%s,%s,%s)', client.id, callsign, background, emblem)
+            else:
+                client.message('^1Failed to update playercard.')
+    
+    
     def _validate_field(self, raw_val, minv, maxv):
         """
         parse int and ensure within [minv, maxv]; return None if invalid
@@ -97,7 +146,7 @@ class PlayercardeditPlugin(b3.plugin.Plugin):
             return None
         return n
 
-    def _do_upsert(self, client_id, callsign, background, emblem):
+    def _do_upsert(self, client, callsign, background, emblem):
         """
         Upsert into xlr_playercard using B3's storage connection.
         Defaults to MySQL/MariaDB ON DUPLICATE KEY UPDATE.
@@ -105,6 +154,7 @@ class PlayercardeditPlugin(b3.plugin.Plugin):
         """
         t = self._table_name
 
+        client_id = client.id
         # MySQL/MariaDB preferred path
         sql = (
             "INSERT INTO {t} (player_id, callsign, background, emblem) "
@@ -124,6 +174,24 @@ class PlayercardeditPlugin(b3.plugin.Plugin):
             self.error('SQL upsert failed: %s', e, exc_info=True)
             return False
         finally:
+            #Push dvars
+            try:
+                self.console.write('set playercard_%s_background %s' % (client.cid, background))
+                self.debug('set playercard_%s_background %s', client.cid, background)
+            except Exception, e:
+                self.debug('failed to set playercard_%s_background: %s', client.cid, e)
+
+            try:
+                self.console.write('set playercard_%s_emblem %s' % (client.cid, emblem))
+                self.debug('set playercard_%s_emblem %s', client.cid, emblem)
+            except Exception, e:
+                self.debug('failed to set playercard_%s_emblem: %s', client.cid, e)
+
+            try:
+                self.console.write('set playercard_%s_callsign %s' % (client.cid, callsign))
+                self.debug('set playercard_%s_callsign %s', client.cid, callsign)
+            except Exception, e:
+                self.debug('failed to set playercard_%d_callsign: %s', client.cid, e)
             try:
                 if cursor:
                     cursor.close()
@@ -167,7 +235,7 @@ class PlayercardeditPlugin(b3.plugin.Plugin):
             return
             
         # perform DB write
-        ok = self._do_upsert(client.id, callsign, background, emblem)
+        ok = self._do_upsert(client, callsign, background, emblem)
         if ok:
             client.message('^7Playercard updated: ^3callsign={0} ^7background={1} ^7emblem={2}'.format(callsign, background, emblem))
             self.verbose('Updated playercard for client_id=%s -> (%s,%s,%s)', client.id, callsign, background, emblem)

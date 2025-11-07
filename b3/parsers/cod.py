@@ -204,6 +204,9 @@ class CodParser(AbstractParser):
                    r'(?P<name>[^;]+);'
                    r'(?P<text>.*))$', re.IGNORECASE),
 
+        # Playercard Edit
+        re.compile(r'^(?P<action>playercard);(?P<data>.+)$', re.IGNORECASE),
+
         # all other events
         re.compile(r'^(?P<action>[A-Z]);'
                    r'(?P<data>'
@@ -559,6 +562,38 @@ class CodParser(AbstractParser):
         # Wawa loser line
         return self._handle_wawa('LL', match.group('data'))
 
+    def OnPlayercard(self, action, data, match=None):
+        """
+        Handle custom logPrint lines like:
+        playercard;12;7;0;23
+          -> slot=12, callsign=7, background=0, emblem=23
+        """
+        parts = data.split(';')
+        if len(parts) < 4:
+            self.debug('playercard line malformed: %r', data)
+            return None
+
+        try:
+            guid      = parts[0]
+            callsign  = int(parts[1])
+            background = int(parts[2])
+            emblem    = int(parts[3])
+        except ValueError:
+            self.debug('playercard line non-numeric: %r', data)
+            return None
+
+        client = self.clients.getByGUID(guid)
+        if not client:
+            # could also try to auth them here but not needed
+            self.debug('playercard line for unknown slot %s', slot)
+            return None
+
+        # emit a custom event the plugin can listen to
+        return self.getEvent('EVT_PLAYERCARD_EDIT', {
+            'callsign': callsign,
+            'background': background,
+            'emblem': emblem,
+        }, client=client)
 
     
     ####################################################################################################################
