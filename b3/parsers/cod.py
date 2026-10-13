@@ -185,6 +185,28 @@ class CodParser(AbstractParser):
                    r'(?P<team>[a-z]+);'
                    r'(?P<name>[^;]+);)$', re.IGNORECASE),
 
+        # CODUO-EXP lines: must come before the tell/say like regexes, which would also match them
+        # Playercard Edit
+        re.compile(r'^(?P<action>playercard);(?P<data>.+)$', re.IGNORECASE),
+
+        # EXP property get: GET;<guid>;<cid>;<queryID>;<prop>;<name>
+        re.compile(r'^(?P<action>GET);'
+                   r'(?P<data>'
+                   r'(?P<guid>[^;]+);'
+                   r'(?P<cid>[0-9]{1,2});'
+                   r'(?P<qid>[^;]+);'
+                   r'(?P<prop>[a-z0-9_]+);'
+                   r'(?P<name>.*))$', re.IGNORECASE),
+
+        # EXP property set: SET;<guid>;<cid>;<prop>;<value>;<name>
+        re.compile(r'^(?P<action>SET);'
+                   r'(?P<data>'
+                   r'(?P<guid>[^;]+);'
+                   r'(?P<cid>[0-9]{1,2});'
+                   r'(?P<prop>[a-z0-9_]+);'
+                   r'(?P<value>-?[0-9]+(?:\.[0-9]+)?);'
+                   r'(?P<name>.*))$', re.IGNORECASE),
+
         # tell like events
         re.compile(r'^(?P<action>[a-z]+);'
                    r'(?P<data>'
@@ -203,9 +225,6 @@ class CodParser(AbstractParser):
                    r'(?P<cid>[0-9]{1,2});'
                    r'(?P<name>[^;]+);'
                    r'(?P<text>.*))$', re.IGNORECASE),
-
-        # Playercard Edit
-        re.compile(r'^(?P<action>playercard);(?P<data>.+)$', re.IGNORECASE),
 
         # all other events
         re.compile(r'^(?P<action>[A-Z]);'
@@ -262,6 +281,11 @@ class CodParser(AbstractParser):
         # add event mappings
         self._eventMap['warmup'] = self.getEventID('EVT_GAME_WARMUP')
         self._eventMap['restartgame'] = self.getEventID('EVT_GAME_ROUND_END')
+
+        # custom CODUO-EXP events (must exist before plugins register for them)
+        self.createEvent('EVT_PLAYERCARD_EDIT', 'Playercard edit')
+        self.createEvent('EVT_EXP_GET', 'EXP property get')
+        self.createEvent('EVT_EXP_SET', 'EXP property set')
 
         # get map from the status rcon command
         mapname = self.getMap()
@@ -585,7 +609,7 @@ class CodParser(AbstractParser):
         client = self.clients.getByGUID(guid)
         if not client:
             # could also try to auth them here but not needed
-            self.debug('playercard line for unknown slot %s', slot)
+            self.debug('playercard line for unknown guid %s', guid)
             return None
 
         # emit a custom event the plugin can listen to
@@ -594,6 +618,50 @@ class CodParser(AbstractParser):
             'background': background,
             'emblem': emblem,
         }, client=client)
+
+    def OnGet(self, action, data, match=None):
+        """
+        Handle CODUO-EXP property queries:
+        GET;<guid>;<cid>;<queryID>;<prop>;<name>
+        """
+        if 'qid' not in match.re.groupindex:
+            # malformed line picked up by a generic regex (e.g. say like events)
+            self.debug('GET line malformed: %r', data)
+            return None
+        return self.getEvent('EVT_EXP_GET', {
+            'guid': match.group('guid'),
+            'cid': match.group('cid'),
+            'qid': match.group('qid'),
+            'prop': match.group('prop').lower(),
+            'name': match.group('name'),
+        }, client=self._getExpClient(match))
+
+    def OnSet(self, action, data, match=None):
+        """
+        Handle CODUO-EXP property updates (value is an absolute total, not a delta):
+        SET;<guid>;<cid>;<prop>;<value>;<name>
+        """
+        if 'value' not in match.re.groupindex:
+            # malformed line (e.g. non-numeric value) picked up by a generic regex
+            self.debug('SET line malformed: %r', data)
+            return None
+        return self.getEvent('EVT_EXP_SET', {
+            'guid': match.group('guid'),
+            'cid': match.group('cid'),
+            'prop': match.group('prop').lower(),
+            'value': match.group('value'),
+            'name': match.group('name'),
+        }, client=self._getExpClient(match))
+
+    def _getExpClient(self, match):
+        """
+        Return the connected client in the given slot only if its guid matches the logged one,
+        so a stale slot (player left, someone else joined) never gets attributed the line.
+        """
+        client = self.clients.getByCID(match.group('cid'))
+        if client and client.guid and client.guid.upper() == match.group('guid').upper():
+            return client
+        return None
 
     
     ####################################################################################################################

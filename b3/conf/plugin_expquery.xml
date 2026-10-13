@@ -1,0 +1,28 @@
+<configuration plugin="expquery">
+  <settings name="settings">
+    <!-- rcon dvar the GET reply is written to; %(cid)s is replaced by the player's slot -->
+    <set name="reply_cvar">query_result_%(cid)s</set>
+
+    <!-- value sent back when the prop, player or row is not found -->
+    <set name="not_found_value">0</set>
+
+    <!-- seconds a SET for a not-yet-authenticated player is held before being dropped -->
+    <set name="pending_ttl">60</set>
+  </settings>
+
+  <!-- table : key column (references clients.id) -->
+  <settings name="tables">
+    <set name="xlr_playerstats">client_id</set>
+    <set name="xlr_playercards">player_id</set>
+  </settings>
+
+  <!-- prop : table.column -->
+  <settings name="props">
+    <set name="exp">xlr_playerstats.exp</set>
+    <!-- skill is also rewritten by XLRstats on every kill: values will overwrite each other -->
+    <!-- <set name="skill">xlr_playerstats.skill</set> -->
+    <!-- <set name="callsign">xlr_playercards.callsign</set> -->
+    <!-- <set name="background">xlr_playercards.background</set> -->
+    <!-- <set name="emblem">xlr_playercards.emblem</set> -->
+  </settings>
+</configuration>

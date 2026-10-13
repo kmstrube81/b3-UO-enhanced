@@ -111,3 +111,100 @@ num score ping guid   name            lastmsg address               qport rate
             'slot': '5', 'score': '5', 'ping': '53', 'guid': '318670', 'name': 'bigredtwit^7', 'last': '0', 'ip': '11.11.11.11', 'pbid': None
         }, rv.get('5', {}), rv)
 
+
+
+class Test_exp_events(CodTestCase):
+    """
+    CODUO-EXP GET/SET log lines.
+    """
+
+    def setUp(self):
+        CodTestCase.setUp(self)
+        # startup() is not run by CodTestCase: create the custom events the same way it does
+        self.console.createEvent('EVT_PLAYERCARD_EDIT', 'Playercard edit')
+        self.console.createEvent('EVT_EXP_GET', 'EXP property get')
+        self.console.createEvent('EVT_EXP_SET', 'EXP property set')
+        self.queueEvent_mock = Mock()
+        self.console.queueEvent = self.queueEvent_mock
+
+    def last_event(self):
+        self.assertTrue(self.queueEvent_mock.called, 'no event was queued')
+        return self.queueEvent_mock.call_args[0][0]
+
+    def test_startup_creates_distinct_events(self):
+        self.console.write = Mock(return_value='')
+        self.console.getMap = Mock(return_value='mp_harbor')
+        self.console.getCvar = Mock(return_value=None)
+        self.console.startup()
+        ids = [self.console.getEventID(k) for k in ('EVT_PLAYERCARD_EDIT', 'EVT_EXP_GET', 'EVT_EXP_SET')]
+        self.assertNotIn(None, ids)
+        self.assertEqual(3, len(set(ids)))
+
+    def test_get_line_parts(self):
+        match, action, data, client, target = self.console.getLineParts('GET;theGuid;4;17;exp;the;Name')
+        self.assertEqual('get', action)
+        self.assertIn('qid', match.re.groupindex)  # not swallowed by the say like regex
+        self.assertEqual('theGuid', match.group('guid'))
+        self.assertEqual('4', match.group('cid'))
+        self.assertEqual('17', match.group('qid'))
+        self.assertEqual('exp', match.group('prop'))
+        self.assertEqual('the;Name', match.group('name'))
+
+    def test_set_line_parts(self):
+        match, action, data, client, target = self.console.getLineParts('SET;theGuid;4;exp;1234;theName')
+        self.assertEqual('set', action)
+        self.assertIn('value', match.re.groupindex)
+        self.assertEqual('exp', match.group('prop'))
+        self.assertEqual('1234', match.group('value'))
+        self.assertEqual('theName', match.group('name'))
+
+    def test_set_non_numeric_value_is_ignored(self):
+        # falls through to the say like regex, OnSet must not blow up or emit an event
+        self.console.parseLine('SET;theGuid;4;exp;lots;theName')
+        self.assertFalse(self.queueEvent_mock.called)
+
+    def test_get_malformed_prop_is_ignored(self):
+        self.console.parseLine('GET;theGuid;4;17;bad prop;theName')
+        self.assertFalse(self.queueEvent_mock.called)
+
+    def test_get_event(self):
+        self.console.parseLine('GET;theGuid;4;17;exp;theName')
+        event = self.last_event()
+        self.assertEqual(self.console.getEventID('EVT_EXP_GET'), event.type)
+        self.assertEqual({'guid': 'theGuid', 'cid': '4', 'qid': '17', 'prop': 'exp', 'name': 'theName'}, event.data)
+        self.assertIs(self.player, event.client)
+
+    def test_set_event(self):
+        self.console.parseLine('SET;theGuid;4;exp;1234;theName')
+        event = self.last_event()
+        self.assertEqual(self.console.getEventID('EVT_EXP_SET'), event.type)
+        self.assertEqual({'guid': 'theGuid', 'cid': '4', 'prop': 'exp', 'value': '1234', 'name': 'theName'},
+                         event.data)
+        self.assertIs(self.player, event.client)
+
+    def test_guid_mismatch_has_no_client(self):
+        self.console.parseLine('SET;otherGuid;4;exp;1234;someoneElse')
+        self.assertIsNone(self.last_event().client)
+
+    def test_unknown_cid_has_no_client(self):
+        self.console.parseLine('GET;theGuid;12;17;exp;theName')
+        self.assertIsNone(self.last_event().client)
+
+    def test_say_still_parsed_as_say(self):
+        self.console.parseLine('say;theGuid;4;theName;hello there')
+        event = self.last_event()
+        self.assertEqual(self.console.getEventID('EVT_CLIENT_SAY'), event.type)
+        self.assertEqual('hello there', event.data)
+
+    def test_sayteam_still_parsed_as_sayteam(self):
+        self.console.parseLine('sayteam;theGuid;4;theName;hello team')
+        self.assertEqual(self.console.getEventID('EVT_CLIENT_TEAM_SAY'), self.last_event().type)
+
+    def test_playercard_event(self):
+        # Clients.getByGUID upper-cases the lookup key (cod guids are numeric in practice)
+        client = self.console.clients.newClient(cid="5", guid="123456789", name="cardName", ip="11.22.33.45")
+        self.console.parseLine('playercard;123456789;7;0;23')
+        event = self.last_event()
+        self.assertIs(client, event.client)
+        self.assertEqual(self.console.getEventID('EVT_PLAYERCARD_EDIT'), event.type)
+        self.assertEqual({'callsign': 7, 'background': 0, 'emblem': 23}, event.data)

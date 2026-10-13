@@ -1,0 +1,301 @@
+
+#  expquery - B3 plugin
+#
+#  Bridges CODUO-EXP GSC <-> B3 database for per-player persistent properties.
+#
+#  The game server logPrints:
+#    GET;<guid>;<cid>;<queryID>;<prop>;<name>
+#      -> B3 replies via rcon: set query_result_<cid> "<queryID>;<value>"   (not_found_value on any miss)
+#    SET;<guid>;<cid>;<prop>;<value>;<name>
+#      -> B3 writes <table>.<column> = <value>  (absolute total, not a delta)
+#
+#  <prop> is mapped to a table/column in the plugin config ([props] prop: table.column).
+#
+#  GSC side contract:
+#    * clear query_result_<entnum> before logging a GET
+#    * use a unique (incrementing) queryID and keep one query in flight per player
+#    * poll the dvar until it starts with "<queryID>;", take the rest, then clear it
+#    * on timeout fall back to a default
+#
+
+from __future__ import print_function
+import re
+import time
+
+import b3
+import b3.plugin
+
+__version__ = '1.0.0'
+__author__  = 'kmstrube81'
+
+# identifiers are interpolated into SQL, so they must match this
+_RE_IDENT = re.compile(r'^[a-z0-9_]+$', re.IGNORECASE)
+_RE_NUMBER = re.compile(r'^-?[0-9]+(?:\.[0-9]+)?$')
+
+# columns XLRstats rewrites on its own (a GSC SET on these will be overwritten and vice versa)
+_XLRSTATS_MANAGED = ('kills', 'deaths', 'teamkills', 'teamdeaths', 'suicides', 'ratio', 'skill', 'assists',
+                     'assistskill', 'curstreak', 'winstreak', 'losestreak', 'rounds')
+
+class ExpqueryPlugin(b3.plugin.Plugin):
+
+    requiresConfigFile = False
+
+    # Defaults (can be overridden in plugin XML)
+    _reply_cvar      = 'query_result_%(cid)s'
+    _not_found_value = '0'
+    _pending_ttl     = 60
+    _playerstats_table = 'xlr_playerstats'
+
+    def __init__(self, console, config=None):
+        b3.plugin.Plugin.__init__(self, console, config)
+        self._tables  = {'xlr_playerstats': 'client_id', 'xlr_playercards': 'player_id'}  # table -> key column
+        self._props   = {}   # prop -> (table, column)
+        self._pending = {}   # (guid, prop) -> (value, timestamp)
+        self._xlrstats = None
+
+    def onLoadConfig(self):
+        # Read optional settings from plugin config
+        try:
+            self._reply_cvar = self.config.get('settings', 'reply_cvar')
+        except Exception:
+            pass
+        try:
+            self._not_found_value = self.config.get('settings', 'not_found_value')
+        except Exception:
+            pass
+        try:
+            self._pending_ttl = self.config.getint('settings', 'pending_ttl')
+        except Exception:
+            pass
+
+        # tables: table -> key column (references clients.id)
+        try:
+            tables = dict(self.config.items('tables'))
+        except Exception:
+            tables = None
+        if tables:
+            self._tables = {}
+            for table, key in tables.items():
+                key = (key or '').strip()
+                if not _RE_IDENT.match(table) or not _RE_IDENT.match(key):
+                    self.error('invalid table mapping %s: %s (ignored)', table, key)
+                    continue
+                self._tables[table] = key
+
+        # props: prop -> table.column
+        self._props = {}
+        try:
+            props = self.config.items('props')
+        except Exception:
+            props = []
+        for prop, target in props:
+            prop = prop.lower()
+            parts = (target or '').strip().split('.')
+            if not _RE_IDENT.match(prop) or len(parts) != 2 or \
+                    not _RE_IDENT.match(parts[0]) or not _RE_IDENT.match(parts[1]):
+                self.error('invalid prop mapping %s: %s (expected table.column)', prop, target)
+                continue
+            if parts[0] not in self._tables:
+                self.error('prop %s maps to table %s which is not listed in [tables] (ignored)', prop, parts[0])
+                continue
+            self._props[prop] = (parts[0], parts[1])
+
+    def onStartup(self):
+        # XLRstats is optional: only used to create missing xlr_playerstats rows the way it does itself
+        self._xlrstats = self.console.getPlugin('xlrstats')
+        if self._xlrstats:
+            self._playerstats_table = self._xlrstats.playerstats_table
+
+        self.registerEvent('EVT_EXP_GET', self.onGet)
+        self.registerEvent('EVT_EXP_SET', self.onSet)
+        self.registerEvent('EVT_CLIENT_AUTH', self.onAuth)
+
+        # make sure every mapped column exists (e.g. the migration has been run)
+        for prop, (table, column) in self._props.items():
+            try:
+                cursor = self.console.storage.query('SELECT %s FROM %s LIMIT 1' % (column, table))
+                cursor.close()
+            except Exception, e:
+                self.error('prop %s disabled: cannot read %s.%s: %s', prop, table, column, e)
+                del self._props[prop]
+                continue
+            if table == self._playerstats_table and column in _XLRSTATS_MANAGED:
+                self.warning('prop %s maps to %s.%s which XLRstats also updates: '
+                             'values will overwrite each other', prop, table, column)
+
+        self.debug('Expquery ready. reply_cvar=%s, props=%s', self._reply_cvar,
+                   ', '.join('%s=%s.%s' % (p, t, c) for p, (t, c) in sorted(self._props.items())))
+
+    # ---- event hooks ---------------------------------------------------------
+    def onGet(self, event):
+        data = event.data or {}
+        cid = data.get('cid')
+        qid = data.get('qid')
+        prop = data.get('prop')
+        value = None
+
+        target = self._props.get(prop)
+        if not target:
+            self.debug('GET for unknown prop %s', prop)
+        else:
+            client_id = self._resolve(event.client, data.get('guid'))
+            if client_id is not None:
+                value = self._read(target, client_id)
+
+        if value is None:
+            value = self._not_found_value
+        self._reply(cid, qid, value)
+
+    def onSet(self, event):
+        data = event.data or {}
+        prop = data.get('prop')
+        value = data.get('value')
+        guid = data.get('guid')
+
+        target = self._props.get(prop)
+        if not target:
+            self.debug('SET for unknown prop %s', prop)
+            return
+        if value is None or not _RE_NUMBER.match(str(value)):
+            self.debug('SET %s with non-numeric value %r', prop, value)
+            return
+
+        client_id = self._resolve(event.client, guid)
+        if client_id is None:
+            # not authenticated yet: hold the value until EVT_CLIENT_AUTH (absolute values: last write wins)
+            if self._valid_guid(guid):
+                self._pending[(guid.upper(), prop)] = (value, time.time())
+                self.verbose('SET %s=%s for guid %s queued until authentication', prop, value, guid)
+            else:
+                self.debug('SET %s=%s dropped: invalid guid %r', prop, value, guid)
+            return
+
+        self._write(target, client_id, value, event.client)
+
+    def onAuth(self, event):
+        client = event.client
+        if not self._pending:
+            return
+
+        now = time.time()
+        for key, (value, stamp) in self._pending.items():
+            if now - stamp > self._pending_ttl:
+                self.debug('dropping expired pending SET %s', key)
+                del self._pending[key]
+
+        if not client or not client.guid or client.id is None:
+            return
+
+        guid = client.guid.upper()
+        for (pguid, prop), (value, stamp) in self._pending.items():
+            if pguid != guid:
+                continue
+            del self._pending[(pguid, prop)]
+            target = self._props.get(prop)
+            if target:
+                self.verbose('flushing pending SET %s=%s for %s', prop, value, client.name)
+                self._write(target, client.id, value, client)
+
+    # ---- helpers -------------------------------------------------------------
+    def _valid_guid(self, guid):
+        min_length = getattr(self.console, '_guidLength', 1)
+        return bool(guid) and guid != '0' and len(guid) >= min_length
+
+    def _resolve(self, client, guid):
+        """
+        Return the clients.id for the event: the authenticated client if the parser matched one,
+        otherwise a lookup by guid (covers returning players during the authentication window).
+        """
+        if client and client.id is not None:
+            return client.id
+        if not self._valid_guid(guid):
+            return None
+        cursor = None
+        try:
+            cursor = self.console.storage.query('SELECT id FROM clients WHERE guid = %s LIMIT 1', (guid,))
+            if cursor and not cursor.EOF:
+                return cursor.getRow()['id']
+        except Exception, e:
+            self.error('client lookup for guid %s failed: %s', guid, e, exc_info=True)
+        finally:
+            if cursor:
+                cursor.close()
+        return None
+
+    def _read(self, target, client_id):
+        table, column = target
+        key = self._tables[table]
+        cursor = None
+        try:
+            cursor = self.console.storage.query('SELECT %s FROM %s WHERE %s = %%s LIMIT 1' % (column, table, key),
+                                                (client_id,))
+            if cursor and not cursor.EOF:
+                return cursor.getRow()[column]
+        except Exception, e:
+            self.error('GET %s.%s failed: %s', table, column, e, exc_info=True)
+        finally:
+            if cursor:
+                cursor.close()
+        return None
+
+    def _write(self, target, client_id, value, client=None):
+        table, column = target
+        key = self._tables[table]
+        try:
+            if table == self._playerstats_table:
+                self._ensure_playerstats(client_id, client)
+                sql = 'UPDATE %s SET %s = %%s WHERE %s = %%s' % (table, column, key)
+            else:
+                sql = ('INSERT INTO {t} ({k}, {c}) VALUES (%s, %s) '
+                       'ON DUPLICATE KEY UPDATE {c}=VALUES({c})').format(t=table, k=key, c=column)
+            cursor = self.console.storage.query(sql, (client_id, value) if table != self._playerstats_table
+                                                else (value, client_id))
+            cursor.close()
+            self.verbose('SET %s.%s = %s for client_id=%s', table, column, value, client_id)
+            return True
+        except Exception, e:
+            self.error('SET %s.%s = %s for client_id=%s failed: %s', table, column, value, client_id, e, exc_info=True)
+            return False
+
+    def _ensure_playerstats(self, client_id, client=None):
+        """
+        Make sure an xlr_playerstats row exists, using XLRstats' own insert path so defaults match.
+        Bypasses XLRstats' minlevel check: EXP is tracked for every player.
+        """
+        cursor = self.console.storage.query('SELECT id FROM %s WHERE client_id = %%s LIMIT 1'
+                                            % self._playerstats_table, (client_id,))
+        try:
+            if cursor and not cursor.EOF:
+                return
+        finally:
+            if cursor:
+                cursor.close()
+
+        if not self._xlrstats:
+            cursor = self.console.storage.query('INSERT INTO %s (client_id) VALUES (%%s)'
+                                                % self._playerstats_table, (client_id,))
+            cursor.close()
+            return
+
+        from b3.plugins.xlrstats import PlayerStats
+        stats = PlayerStats()
+        stats._new = True
+        stats.skill = self._xlrstats.defaultskill
+        stats.Kfactor = self._xlrstats.Kfactor_high
+        stats.client_id = client_id
+        self._xlrstats.save_Stat(stats)
+        self.debug('created %s row for client_id=%s', self._playerstats_table, client_id)
+
+    def _reply(self, cid, qid, value):
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        value = str(value).replace('"', '').replace(';', '')
+        qid = str(qid).replace('"', '').replace(';', '')
+        try:
+            cvar = self._reply_cvar % {'cid': cid}
+        except Exception:
+            cvar = self._reply_cvar
+        try:
+            self.console.setCvar(cvar, '%s;%s' % (qid, value))
+        except Exception, e:
+            self.error('failed to set %s: %s', cvar, e)
