@@ -155,6 +155,13 @@ class Test_exp_events(CodTestCase):
         self.assertEqual(self.console.getEventID('EVT_EXP_GET'), event.type)
         self.assertEqual('exp,background,emblem', event.data['prop'])
 
+    def test_batched_get_with_spaces_after_commas(self):
+        self.console.parseLine('GET;theGuid;4;2;background, emblem, callsign, totalkills, totaldeaths, skill;theName')
+        event = self.last_event()
+        self.assertEqual(self.console.getEventID('EVT_EXP_GET'), event.type)
+        self.assertEqual('background,emblem,callsign,totalkills,totaldeaths,skill', event.data['prop'])
+        self.assertEqual('theName', event.data['name'])
+
     def test_set_line_parts(self):
         match, action, data, client, target = self.console.getLineParts('SET;theGuid;4;exp;1234;theName')
         self.assertEqual('set', action)

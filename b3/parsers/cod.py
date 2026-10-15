@@ -193,7 +193,7 @@ class CodParser(AbstractParser):
                    r'(?P<guid>[^;]+);'
                    r'(?P<cid>[0-9]{1,2});'
                    r'(?P<qid>[^;]+);'
-                   r'(?P<prop>[a-z0-9_]+(?:,[a-z0-9_]+)*);'
+                   r'(?P<prop>[a-z0-9_]+(?:\s*,\s*[a-z0-9_]+)*);'
                    r'(?P<name>.*))$', re.IGNORECASE),
 
         # EXP property set: SET;<guid>;<cid>;<prop>;<value>;<name>
@@ -596,7 +596,7 @@ class CodParser(AbstractParser):
             'guid': match.group('guid'),
             'cid': match.group('cid'),
             'qid': match.group('qid'),
-            'prop': match.group('prop').lower(),
+            'prop': re.sub(r'\s+', '', match.group('prop')).lower(),
             'name': match.group('name'),
         }, client=self._getExpClient(match))
 
