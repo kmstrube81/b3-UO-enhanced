@@ -6,6 +6,8 @@
 #  The game server logPrints:
 #    GET;<guid>;<cid>;<queryID>;<prop>;<name>
 #      -> B3 replies via rcon: set query_result_<cid> "<queryID>;<value>"   (not_found_value on any miss)
+#    GET;<guid>;<cid>;<queryID>;<prop1>,<prop2>,...;<name>      (batched: one reply for several props)
+#      -> set query_result_<cid> "<queryID>;<value1>,<value2>,..."      (same order as requested)
 #    SET;<guid>;<cid>;<prop>;<value>;<name>
 #      -> B3 writes <table>.<column> = <value>  (absolute total, not a delta)
 #
@@ -16,10 +18,17 @@
 #    * use a unique (incrementing) queryID and keep one query in flight per player
 #    * poll the dvar until it starts with "<queryID>;", take the rest, then clear it
 #    * on timeout fall back to a default
+#    * prefer one batched GET per player: a full server at map start then needs 1 reply per player
+#
+#  Replies are sent from a worker thread so the B3 event thread never waits on rcon (each rcon write
+#  otherwise blocks for the full socket timeout). Pending replies for the same dvar are coalesced:
+#  only the newest one is sent, since GSC only waits for its latest queryID.
 #
 
 from __future__ import print_function
+import Queue
 import re
+import threading
 import time
 
 import b3
@@ -31,6 +40,10 @@ __author__  = 'kmstrube81'
 # identifiers are interpolated into SQL, so they must match this
 _RE_IDENT = re.compile(r'^[a-z0-9_]+$', re.IGNORECASE)
 _RE_NUMBER = re.compile(r'^-?[0-9]+(?:\.[0-9]+)?$')
+_RE_CVAR = re.compile(r'^[a-z0-9_.]+$', re.IGNORECASE)
+
+# engine limit for a dvar value (MAX_CVAR_VALUE_STRING)
+_MAX_REPLY_LENGTH = 255
 
 # columns XLRstats rewrites on its own (a GSC SET on these will be overwritten and vice versa)
 _XLRSTATS_MANAGED = ('kills', 'deaths', 'teamkills', 'teamdeaths', 'suicides', 'ratio', 'skill', 'assists',
@@ -44,6 +57,8 @@ class ExpqueryPlugin(b3.plugin.Plugin):
     _reply_cvar      = 'query_result_%(cid)s'
     _not_found_value = '0'
     _pending_ttl     = 60
+    _reply_timeout   = 0.1    # rcon socket timeout for replies (B3 default 0.8s caps throughput at ~1 reply/s)
+    _async_replies   = True
     _playerstats_table = 'xlr_playerstats'
 
     def __init__(self, console, config=None):
@@ -52,6 +67,10 @@ class ExpqueryPlugin(b3.plugin.Plugin):
         self._props   = {}   # prop -> (table, column)
         self._pending = {}   # (guid, prop) -> (value, timestamp)
         self._xlrstats = None
+        self._replies = {}   # cvar -> newest reply text waiting to be sent
+        self._replies_lock = threading.Lock()
+        self._reply_queue = Queue.Queue()
+        self._reply_thread = None
 
     def onLoadConfig(self):
         # Read optional settings from plugin config
@@ -65,6 +84,14 @@ class ExpqueryPlugin(b3.plugin.Plugin):
             pass
         try:
             self._pending_ttl = self.config.getint('settings', 'pending_ttl')
+        except Exception:
+            pass
+        try:
+            self._reply_timeout = max(0.01, self.config.getfloat('settings', 'reply_timeout'))
+        except Exception:
+            pass
+        try:
+            self._async_replies = self.config.getboolean('settings', 'async_replies')
         except Exception:
             pass
 
@@ -123,28 +150,38 @@ class ExpqueryPlugin(b3.plugin.Plugin):
                 self.warning('prop %s maps to %s.%s which XLRstats also updates: '
                              'values will overwrite each other', prop, table, column)
 
-        self.debug('Expquery ready. reply_cvar=%s, props=%s', self._reply_cvar,
+        if self._async_replies and not self._reply_thread:
+            self._reply_thread = threading.Thread(target=self._reply_worker, name='expquery-replies')
+            self._reply_thread.setDaemon(True)
+            self._reply_thread.start()
+
+        self.debug('Expquery ready. reply_cvar=%s, reply_timeout=%ss, async=%s, props=%s', self._reply_cvar,
+                   self._reply_timeout, self._async_replies,
                    ', '.join('%s=%s.%s' % (p, t, c) for p, (t, c) in sorted(self._props.items())))
+
+    def onStop(self, event):
+        self._reply_queue.put(None)
+
+    def onExit(self, event):
+        self._reply_queue.put(None)
 
     # ---- event hooks ---------------------------------------------------------
     def onGet(self, event):
         data = event.data or {}
-        cid = data.get('cid')
-        qid = data.get('qid')
-        prop = data.get('prop')
-        value = None
+        props = [p for p in (data.get('prop') or '').split(',') if p]
+        values = dict.fromkeys(props)
 
-        target = self._props.get(prop)
-        if not target:
-            self.debug('GET for unknown prop %s', prop)
-        else:
+        known = [p for p in props if p in self._props]
+        for p in props:
+            if p not in self._props:
+                self.debug('GET for unknown prop %s', p)
+
+        if known:
             client_id = self._resolve(event.client, data.get('guid'))
             if client_id is not None:
-                value = self._read(target, client_id)
+                values.update(self._read(known, client_id))
 
-        if value is None:
-            value = self._not_found_value
-        self._reply(cid, qid, value)
+        self._reply(data.get('cid'), data.get('qid'), [values[p] for p in props])
 
     def onSet(self, event):
         data = event.data or {}
@@ -222,21 +259,36 @@ class ExpqueryPlugin(b3.plugin.Plugin):
                 cursor.close()
         return None
 
-    def _read(self, target, client_id):
-        table, column = target
-        key = self._tables[table]
-        cursor = None
-        try:
-            cursor = self.console.storage.query('SELECT %s FROM %s WHERE %s = %%s LIMIT 1' % (column, table, key),
-                                                (client_id,))
-            if cursor and not cursor.EOF:
-                return cursor.getRow()[column]
-        except Exception, e:
-            self.error('GET %s.%s failed: %s', table, column, e, exc_info=True)
-        finally:
-            if cursor:
-                cursor.close()
-        return None
+    def _read(self, props, client_id):
+        """
+        Read the given (known) props for a player: one query per table.
+        Return a dict prop -> value (props without a row are left out).
+        """
+        by_table = {}
+        for prop in props:
+            table, column = self._props[prop]
+            by_table.setdefault(table, []).append((prop, column))
+
+        values = {}
+        for table, wanted in by_table.items():
+            columns = []
+            for prop, column in wanted:
+                if column not in columns:
+                    columns.append(column)
+            cursor = None
+            try:
+                cursor = self.console.storage.query('SELECT %s FROM %s WHERE %s = %%s LIMIT 1'
+                                                    % (', '.join(columns), table, self._tables[table]), (client_id,))
+                if cursor and not cursor.EOF:
+                    row = cursor.getRow()
+                    for prop, column in wanted:
+                        values[prop] = row.get(column)
+            except Exception, e:
+                self.error('GET %s.(%s) failed: %s', table, ', '.join(columns), e, exc_info=True)
+            finally:
+                if cursor:
+                    cursor.close()
+        return values
 
     def _write(self, target, client_id, value, client=None):
         table, column = target
@@ -286,20 +338,57 @@ class ExpqueryPlugin(b3.plugin.Plugin):
         self._xlrstats.save_Stat(stats)
         self.debug('created %s row for client_id=%s', self._playerstats_table, client_id)
 
-    def _reply(self, cid, qid, value):
+    def _format(self, value):
         # GSC treats every value as an integer: round to the nearest one (float, Decimal or numeric string)
+        if value is None:
+            value = self._not_found_value
         try:
             value = int(round(float(value)))
         except (TypeError, ValueError):
             self.debug('non-numeric value %r replaced by %s', value, self._not_found_value)
             value = self._not_found_value
-        value = str(value).replace('"', '').replace(';', '')
+        return str(value).replace('"', '').replace(';', '').replace(',', '')
+
+    def _reply(self, cid, qid, values):
         qid = str(qid).replace('"', '').replace(';', '')
+        text = '%s;%s' % (qid, ','.join(self._format(v) for v in values))
+        if len(text) > _MAX_REPLY_LENGTH:
+            self.warning('reply for query %s is %s chars (dvar limit %s): request fewer props per GET',
+                         qid, len(text), _MAX_REPLY_LENGTH)
         try:
             cvar = self._reply_cvar % {'cid': cid}
         except Exception:
             cvar = self._reply_cvar
+        if not _RE_CVAR.match(cvar):
+            self.error('invalid reply cvar name %r', cvar)
+            return
+
+        if not self._async_replies:
+            self._send(cvar, text)
+            return
+
+        # coalesce: if a reply for this dvar is still waiting, replace it instead of queueing another send
+        with self._replies_lock:
+            waiting = cvar in self._replies
+            self._replies[cvar] = text
+        if not waiting:
+            self._reply_queue.put(cvar)
+
+    def _reply_worker(self):
+        while True:
+            cvar = self._reply_queue.get()
+            if cvar is None:
+                break
+            with self._replies_lock:
+                text = self._replies.pop(cvar, None)
+            if text is not None:
+                self._send(cvar, text)
+
+    def _send(self, cvar, text):
+        cmd = self.console.getCommand('set', name=cvar, value=text) or 'set %s "%s"' % (cvar, text)
         try:
-            self.console.setCvar(cvar, '%s;%s' % (qid, value))
+            # we never need the server's (empty) answer to a set: a short timeout keeps replies fast
+            self.console.write(cmd, maxRetries=1, socketTimeout=self._reply_timeout)
+            self.debug('reply %s = %s', cvar, text)
         except Exception, e:
             self.error('failed to set %s: %s', cvar, e)

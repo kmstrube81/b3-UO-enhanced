@@ -130,17 +130,6 @@ class XlrstatsPlugin(b3.plugin.Plugin):
     # default tablenames for the history subplugin
     history_monthly_table = 'xlr_history_monthly'
     history_weekly_table = 'xlr_history_weekly'
-    # default tablenames for the playercard subplugin
-    playercards_table = 'xlr_playercards'
-    playercards_player_id_col = 'player_id'
-    playercards_background_col = 'background'
-    playercards_emblem_col = 'emblem'
-    playercards_callsign_col = 'callsign'
-    playercards_updated_at_col = 'updated_at'   # if missing in your schema, we’ll just ignore ORDER BY
-    default_playercard_background = 0
-    default_playercard_emblem = 0
-    default_playercard_callsign = 0
-    default_playercard_skill = 0
     
 
     # default table name for the ctime subplugin
@@ -468,10 +457,6 @@ class XlrstatsPlugin(b3.plugin.Plugin):
         """
         self.checkMinPlayers()
         self.join(event.client)
-        try:
-            self._set_playercard_for_client(event.client)
-        except Exception, e:
-            self.debug('playercard background sync skipped for %s: %s', getattr(event.client, 'name', '?'), e)
 
     def onKill(self, event):
         """
@@ -536,121 +521,6 @@ class XlrstatsPlugin(b3.plugin.Plugin):
     #    OTHER METHODS                                                                                                 #
     #                                                                                                                  #
     ####################################################################################################################
-    def _set_playercard_for_client(self, client):
-        """
-        Look up xlr_playercards.background for this client and set:
-            playercard_<cid>_background <value>
-        """
-        if client is None or client.cid is None:
-            return
-
-        # Resolve/ensure a playerstats row (gives us playerstats.id)
-        player = self.get_PlayerStats(client)
-        if player is None:
-            return
-        if hasattr(player, '_new'):
-            # Make sure the playerstats row exists so player.id is defined
-            self.save_Stat(player)
-
-        # Prepare SQL using configured names
-        t  = self.playercards_table
-        cP = self.playercards_player_id_col
-        cB = self.playercards_background_col
-        cE = self.playercards_emblem_col
-        cC = self.playercards_callsign_col
-        cU = self.playercards_updated_at_col
-
-        bg = self.default_playercard_background
-        em = self.default_playercard_emblem
-        cs = self.default_playercard_callsign
-        
-        try:
-            # Try most-recent row if updated_at column exists; otherwise fallback without ORDER BY
-            if cU:
-                sql = "SELECT %s AS bg, %s AS em, %s AS cs FROM %s WHERE %s = %%s ORDER BY %s DESC LIMIT 1" % (
-                    cB, cE, cC, t, cP, cU
-                )
-            else:
-                sql = "SELECT %s AS bg, %s AS em, %s AS cs FROM %s WHERE %s = %%s LIMIT 1" % (
-                    cB, cE, cC, t, cP
-                )
-
-            cur = self.query(sql, [player.client_id])
-            if cur and not cur.EOF:
-                row = cur.getRow()
-                # row may be dict-like depending on storage backend
-                get = row.get if hasattr(row, 'get') else (lambda k, r=row: r[['bg','em','cs'].index(k)])
-                bg = get('bg')
-                em = get('em')
-                cs = get('cs')
-        except Exception, e:
-            self.debug('playercard lookup failed for %s(@%s): %s', client.name, client.id, e)
-
-        #Push dvars
-        try:
-            self.console.write('set playercard_%s_background %s' % (client.cid, bg))
-            self.debug('set playercard_%s_background %s', client.cid, bg)
-        except Exception, e:
-            self.debug('failed to set playercard_%s_background: %s', client.cid, e)
-
-        try:
-            self.console.write('set playercard_%s_emblem %s' % (client.cid, em))
-            self.debug('set playercard_%s_emblem %s', client.cid, em)
-        except Exception, e:
-            self.debug('failed to set playercard_%s_emblem: %s', client.cid, e)
-
-        try:
-            self.console.write('set playercard_%s_callsign %s' % (client.cid, cs))
-            self.debug('set playercard_%s_callsign %s', client.cid, cs)
-        except Exception, e:
-            self.debug('failed to set playercard_%d_callsign: %s', client.cid, e)
-            
-        sk = None
-        try:
-            sk = getattr(player, 'skill', None)
-        except Exception:
-            sk = None
-
-        if sk is None:
-            sk = self.default_playercard_skill
-
-        # Round to 2 decimals and stringify safely
-        try:
-            sk_str = '%.2f' % float(sk)
-        except Exception:
-            sk_str = '%.2f' % float(self.default_playercard_skill)
-
-        try:
-            self.console.write('set playercard_%s_skill %s' % (client.cid, sk_str))
-            self.debug('set playercard_%s_skill %s', client.cid, sk_str)
-        except Exception, e:
-            self.debug('failed to set playercard_%s_skill: %s', client.cid, e)
-            
-        ks = None
-        try:
-            ks = getattr(player, 'kills', None)
-        except Exception:
-            ks = None
-
-        try:
-            self.console.write('set playercard_%s_kills %s' % (client.cid, ks))
-            self.debug('set playercard_%s_kills %s', client.cid, ks)
-        except Exception, e:
-            self.debug('failed to set playercard_%s_kills: %s', client.cid, e)
-            
-        ds = None
-        try:
-            ds = getattr(player, 'deaths', None)
-        except Exception:
-            ds = None
-
-        try:
-            self.console.write('set playercard_%s_deaths %s' % (client.cid, ds))
-            self.debug('set playercard_%s_deaths %s', client.cid, ds)
-        except Exception, e:
-            self.debug('failed to set playercard_%s_deaths: %s', client.cid, e)
-
-    
     def _handleMatchAction(self, client, payload):
         action = (payload.get('action') or '').lower()
         if action not in ('match_win', 'match_loss', 'wawa_win', 'wawa_loss', 'round_win', 'round_loss'):

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import re
+import threading
 import time
 
 from mock import Mock
@@ -19,6 +20,7 @@ DEFAULT_CONFIG = """
     <set name="reply_cvar">query_result_%(cid)s</set>
     <set name="not_found_value">0</set>
     <set name="pending_ttl">60</set>
+    <set name="async_replies">no</set>
   </settings>
   <settings name="tables">
     <set name="xlr_playerstats">client_id</set>
@@ -50,7 +52,7 @@ class FakeDB(object):
     Just enough of a MySQL stand-in to run the queries the plugin issues
     (the test SQLite backend uses '?' placeholders, the plugin targets MySQL '%s').
     """
-    _re_select = re.compile(r'^SELECT (\w+) FROM (\w+)(?: WHERE (\w+) = %s)? LIMIT 1$')
+    _re_select = re.compile(r'^SELECT ([\w, ]+) FROM (\w+)(?: WHERE (\w+) = %s)? LIMIT 1$')
     _re_update = re.compile(r'^UPDATE (\w+) SET (\w+) = %s WHERE (\w+) = %s$')
     _re_insert = re.compile(r'^INSERT INTO (\w+) \((\w+)(?:, (\w+))?\) VALUES')
 
@@ -67,13 +69,15 @@ class FakeDB(object):
         self.queries.append((sql, bindata))
         m = self._re_select.match(sql)
         if m:
-            column, table, key = m.groups()
-            if column not in self.columns[table]:
-                raise Exception("(1054, Unknown column %s)" % column)
+            columns, table, key = m.groups()
+            columns = [c.strip() for c in columns.split(',')]
+            for column in columns:
+                if column not in self.columns[table]:
+                    raise Exception("(1054, Unknown column %s)" % column)
             rows = self.rows[table]
             if key:
                 rows = [r for r in rows if r.get(key) == bindata[0]]
-            return FakeCursor([{column: r.get(column)} for r in rows[:1]])
+            return FakeCursor([dict((c, r.get(c)) for c in columns) for r in rows[:1]])
         m = self._re_update.match(sql)
         if m:
             table, column, key = m.groups()
@@ -110,7 +114,16 @@ class ExpqueryTestCase(B3TestCase):
         self.db = FakeDB()
         self.console.storage = Mock()
         self.console.storage.query = Mock(side_effect=self.db.query)
-        self.console.setCvar = Mock()
+        # capture replies as (cvar, text) by parsing the rcon command the plugin sends
+        self.sent = Mock()
+        self.write_kwargs = []
+
+        def write(cmd, **kwargs):
+            m = re.match(r'^set (\S+) "(.*)"$', cmd)
+            self.sent(m.group(1), m.group(2))
+            self.write_kwargs.append(kwargs)
+        self.console.write = Mock(side_effect=write)
+        self.console.getCommand = Mock(side_effect=lambda cmd, **kw: 'set %(name)s "%(value)s"' % kw)
 
         # XLRstats stand-in: only the bits the plugin touches
         self.xlrstats = Mock()
@@ -187,43 +200,43 @@ class Test_get(ExpqueryTestCase):
 
     def test_existing_row(self):
         self.get(client=self.client)
-        self.console.setCvar.assert_called_once_with('query_result_4', '17;1234')
+        self.sent.assert_called_once_with('query_result_4', '17;1234')
 
     def test_integral_float_has_no_decimals(self):
         self.row('xlr_playerstats', 'client_id', 1)['exp'] = 1234.0
         self.get(client=self.client)
-        self.console.setCvar.assert_called_once_with('query_result_4', '17;1234')
+        self.sent.assert_called_once_with('query_result_4', '17;1234')
 
     def test_rounds_to_nearest_integer(self):
         from decimal import Decimal
         row = self.row('xlr_playerstats', 'client_id', 1)
         for stored, expected in ((1234.4, '1234'), (1234.6, '1235'), (Decimal('99.5'), '100'), ('42.7', '43')):
-            self.console.setCvar.reset_mock()
+            self.sent.reset_mock()
             row['exp'] = stored
             self.get(client=self.client)
-            self.console.setCvar.assert_called_once_with('query_result_4', '17;' + expected)
+            self.sent.assert_called_once_with('query_result_4', '17;' + expected)
 
     def test_non_numeric_value_sends_not_found(self):
         self.row('xlr_playerstats', 'client_id', 1)['exp'] = 'abc'
         self.get(client=self.client)
-        self.console.setCvar.assert_called_once_with('query_result_4', '17;0')
+        self.sent.assert_called_once_with('query_result_4', '17;0')
 
     def test_resolves_by_guid_when_not_authenticated(self):
         self.get(client=None)
-        self.console.setCvar.assert_called_once_with('query_result_4', '17;1234')
+        self.sent.assert_called_once_with('query_result_4', '17;1234')
 
     def test_unknown_prop(self):
         self.get(prop='nope', client=self.client)
-        self.console.setCvar.assert_called_once_with('query_result_4', '17;0')
+        self.sent.assert_called_once_with('query_result_4', '17;0')
 
     def test_unknown_player(self):
         self.get(guid='999999', client=None)
-        self.console.setCvar.assert_called_once_with('query_result_4', '17;0')
+        self.sent.assert_called_once_with('query_result_4', '17;0')
 
     def test_missing_row(self):
         self.db.insert('clients', id=2, guid='654321')
         self.get(guid='654321', client=None)
-        self.console.setCvar.assert_called_once_with('query_result_4', '17;0')
+        self.sent.assert_called_once_with('query_result_4', '17;0')
 
     def test_slots_use_separate_dvars(self):
         self.db.insert('clients', id=2, guid='654321')
@@ -231,7 +244,70 @@ class Test_get(ExpqueryTestCase):
         self.get(cid='4', qid='1', client=self.client)
         self.get(cid='9', qid='2', guid='654321')
         self.assertEqual([('query_result_4', '1;1234'), ('query_result_9', '2;50')],
-                         [c[0] for c in self.console.setCvar.call_args_list])
+                         [c[0] for c in self.sent.call_args_list])
+
+    def test_batched_props_in_requested_order(self):
+        self.db.insert('xlr_playercards', player_id=1, callsign=7)
+        self.get(prop='callsign,nope,exp', client=self.client)
+        self.sent.assert_called_once_with('query_result_4', '17;7,0,1234')
+
+    def test_batched_props_one_query_per_table(self):
+        self.row('xlr_playerstats', 'client_id', 1)['skill'] = 1481.57
+        before = len(self.db.queries)
+        self.p._props['skill'] = ('xlr_playerstats', 'skill')
+        self.get(prop='exp,skill', client=self.client)
+        self.sent.assert_called_once_with('query_result_4', '17;1234,1482')
+        self.assertEqual(1, len(self.db.queries) - before)
+
+    def test_reply_uses_short_rcon_timeout(self):
+        self.get(client=self.client)
+        self.assertEqual([{'maxRetries': 1, 'socketTimeout': 0.1}], self.write_kwargs)
+
+
+class Test_async_replies(ExpqueryTestCase):
+
+    def setUp(self):
+        ExpqueryTestCase.setUp(self)
+        self.init(DEFAULT_CONFIG.replace('<set name="async_replies">no</set>', ''))
+
+    def tearDown(self):
+        self.p._reply_queue.put(None)
+        self.p._reply_thread.join(2)
+        ExpqueryTestCase.tearDown(self)
+
+    def test_reply_sent_by_worker(self):
+        self.get(client=self.client)
+        deadline = time.time() + 2
+        while not self.sent.called and time.time() < deadline:
+            time.sleep(0.01)
+        self.sent.assert_called_once_with('query_result_4', '17;1234')
+
+    def test_pending_replies_for_same_dvar_are_coalesced(self):
+        # hold the worker on the rcon write so replies pile up behind it
+        release = threading.Event()
+        blocked = threading.Event()
+        original = self.console.write.side_effect
+
+        def slow_write(cmd, **kwargs):
+            blocked.set()
+            release.wait(2)
+            original(cmd, **kwargs)
+        self.console.write.side_effect = slow_write
+
+        self.db.insert('clients', id=2, guid='654321')
+        self.db.insert('xlr_playerstats', client_id=2, exp=50, skill=1000)
+        self.get(cid='9', qid='1', guid='654321')          # occupies the worker
+        blocked.wait(2)
+        self.get(qid='2', client=self.client)               # queued for query_result_4 ...
+        self.get(qid='3', client=self.client)               # ... replaced by the newer query
+        release.set()
+
+        deadline = time.time() + 2
+        while self.sent.call_count < 2 and time.time() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.1)
+        self.assertEqual([('query_result_9', '1;50'), ('query_result_4', '3;1234')],
+                         [c[0] for c in self.sent.call_args_list])
 
 
 class Test_set(ExpqueryTestCase):
@@ -246,7 +322,7 @@ class Test_set(ExpqueryTestCase):
         self.set('750', client=self.client)
         self.assertEqual('750', self.row('xlr_playerstats', 'client_id', 1)['exp'])
         self.get(client=self.client)
-        self.console.setCvar.assert_called_once_with('query_result_4', '17;750')
+        self.sent.assert_called_once_with('query_result_4', '17;750')
 
     def test_creates_missing_playerstats_row_via_xlrstats(self):
         self.db.insert('clients', id=2, guid='654321')

@@ -186,16 +186,14 @@ class CodParser(AbstractParser):
                    r'(?P<name>[^;]+);)$', re.IGNORECASE),
 
         # CODUO-EXP lines: must come before the tell/say like regexes, which would also match them
-        # Playercard Edit
-        re.compile(r'^(?P<action>playercard);(?P<data>.+)$', re.IGNORECASE),
 
-        # EXP property get: GET;<guid>;<cid>;<queryID>;<prop>;<name>
+        # EXP property get: GET;<guid>;<cid>;<queryID>;<prop>[,<prop>...];<name>
         re.compile(r'^(?P<action>GET);'
                    r'(?P<data>'
                    r'(?P<guid>[^;]+);'
                    r'(?P<cid>[0-9]{1,2});'
                    r'(?P<qid>[^;]+);'
-                   r'(?P<prop>[a-z0-9_]+);'
+                   r'(?P<prop>[a-z0-9_]+(?:,[a-z0-9_]+)*);'
                    r'(?P<name>.*))$', re.IGNORECASE),
 
         # EXP property set: SET;<guid>;<cid>;<prop>;<value>;<name>
@@ -283,7 +281,6 @@ class CodParser(AbstractParser):
         self._eventMap['restartgame'] = self.getEventID('EVT_GAME_ROUND_END')
 
         # custom CODUO-EXP events (must exist before plugins register for them)
-        self.createEvent('EVT_PLAYERCARD_EDIT', 'Playercard edit')
         self.createEvent('EVT_EXP_GET', 'EXP property get')
         self.createEvent('EVT_EXP_SET', 'EXP property set')
 
@@ -586,43 +583,10 @@ class CodParser(AbstractParser):
         # Wawa loser line
         return self._handle_wawa('LL', match.group('data'))
 
-    def OnPlayercard(self, action, data, match=None):
-        """
-        Handle custom logPrint lines like:
-        playercard;12;7;0;23
-          -> slot=12, callsign=7, background=0, emblem=23
-        """
-        parts = data.split(';')
-        if len(parts) < 4:
-            self.debug('playercard line malformed: %r', data)
-            return None
-
-        try:
-            guid      = parts[0]
-            callsign  = int(parts[1])
-            background = int(parts[2])
-            emblem    = int(parts[3])
-        except ValueError:
-            self.debug('playercard line non-numeric: %r', data)
-            return None
-
-        client = self.clients.getByGUID(guid)
-        if not client:
-            # could also try to auth them here but not needed
-            self.debug('playercard line for unknown guid %s', guid)
-            return None
-
-        # emit a custom event the plugin can listen to
-        return self.getEvent('EVT_PLAYERCARD_EDIT', {
-            'callsign': callsign,
-            'background': background,
-            'emblem': emblem,
-        }, client=client)
-
     def OnGet(self, action, data, match=None):
         """
         Handle CODUO-EXP property queries:
-        GET;<guid>;<cid>;<queryID>;<prop>;<name>
+        GET;<guid>;<cid>;<queryID>;<prop>[,<prop>...];<name>
         """
         if 'qid' not in match.re.groupindex:
             # malformed line picked up by a generic regex (e.g. say like events)
