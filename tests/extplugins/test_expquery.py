@@ -194,6 +194,20 @@ class Test_get(ExpqueryTestCase):
         self.get(client=self.client)
         self.console.setCvar.assert_called_once_with('query_result_4', '17;1234')
 
+    def test_rounds_to_nearest_integer(self):
+        from decimal import Decimal
+        row = self.row('xlr_playerstats', 'client_id', 1)
+        for stored, expected in ((1234.4, '1234'), (1234.6, '1235'), (Decimal('99.5'), '100'), ('42.7', '43')):
+            self.console.setCvar.reset_mock()
+            row['exp'] = stored
+            self.get(client=self.client)
+            self.console.setCvar.assert_called_once_with('query_result_4', '17;' + expected)
+
+    def test_non_numeric_value_sends_not_found(self):
+        self.row('xlr_playerstats', 'client_id', 1)['exp'] = 'abc'
+        self.get(client=self.client)
+        self.console.setCvar.assert_called_once_with('query_result_4', '17;0')
+
     def test_resolves_by_guid_when_not_authenticated(self):
         self.get(client=None)
         self.console.setCvar.assert_called_once_with('query_result_4', '17;1234')

@@ -287,8 +287,12 @@ class ExpqueryPlugin(b3.plugin.Plugin):
         self.debug('created %s row for client_id=%s', self._playerstats_table, client_id)
 
     def _reply(self, cid, qid, value):
-        if isinstance(value, float) and value.is_integer():
-            value = int(value)
+        # GSC treats every value as an integer: round to the nearest one (float, Decimal or numeric string)
+        try:
+            value = int(round(float(value)))
+        except (TypeError, ValueError):
+            self.debug('non-numeric value %r replaced by %s', value, self._not_found_value)
+            value = self._not_found_value
         value = str(value).replace('"', '').replace(';', '')
         qid = str(qid).replace('"', '').replace(';', '')
         try:
