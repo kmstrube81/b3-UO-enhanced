@@ -9,9 +9,16 @@
     <!-- seconds a SET for a not-yet-authenticated player is held before being dropped -->
     <set name="pending_ttl">60</set>
 
-    <!-- seconds to wait for the server's answer to each reply (B3's default rcon wait is 0.8s).
-         Lower = more replies per second; raise it if replies go missing under load. -->
-    <set name="reply_timeout">0.1</set>
+    <!-- seconds to wait for the server to acknowledge a reply before treating it as dropped.
+         Keep it above the B3 -> game server round trip time. -->
+    <set name="reply_timeout">0.3</set>
+
+    <!-- minimum seconds between replies. The CoD engine ignores an rcon packet that arrives
+         within ~500ms of the previous one, so keep this above 0.5. -->
+    <set name="reply_interval">0.55</set>
+
+    <!-- how many times a reply the server did not acknowledge is resent -->
+    <set name="reply_retries">3</set>
   </settings>
 
   <!-- table : key column (references clients.id) -->

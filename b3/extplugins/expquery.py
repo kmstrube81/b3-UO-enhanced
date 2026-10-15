@@ -24,10 +24,16 @@
 #  otherwise blocks for the full socket timeout). Pending replies for the same dvar are coalesced:
 #  only the newest one is sent, since GSC only waits for its latest queryID.
 #
+#  The CoD engine ignores an rcon packet arriving within ~500ms of the previous one (any rcon, including
+#  B3's own). Replies are therefore spaced reply_interval apart, and a reply the server never answered is
+#  resent up to reply_retries times.
+#
 
 from __future__ import print_function
 import Queue
 import re
+import select
+import socket
 import threading
 import time
 
@@ -57,7 +63,9 @@ class ExpqueryPlugin(b3.plugin.Plugin):
     _reply_cvar      = 'query_result_%(cid)s'
     _not_found_value = '0'
     _pending_ttl     = 60
-    _reply_timeout   = 0.1    # rcon socket timeout for replies (B3 default 0.8s caps throughput at ~1 reply/s)
+    _reply_timeout   = 0.3    # seconds to wait for the server to acknowledge a reply
+    _reply_interval  = 0.55   # minimum seconds between replies (engine drops rcon within ~500ms of the last)
+    _reply_retries   = 3      # resends of a reply the server did not acknowledge
     _async_replies   = True
     _playerstats_table = 'xlr_playerstats'
 
@@ -67,7 +75,8 @@ class ExpqueryPlugin(b3.plugin.Plugin):
         self._props   = {}   # prop -> (table, column)
         self._pending = {}   # (guid, prop) -> (value, timestamp)
         self._xlrstats = None
-        self._replies = {}   # cvar -> newest reply text waiting to be sent
+        self._replies = {}   # cvar -> (newest reply text waiting to be sent, attempt)
+        self._last_send = 0.0
         self._replies_lock = threading.Lock()
         self._reply_queue = Queue.Queue()
         self._reply_thread = None
@@ -88,6 +97,14 @@ class ExpqueryPlugin(b3.plugin.Plugin):
             pass
         try:
             self._reply_timeout = max(0.01, self.config.getfloat('settings', 'reply_timeout'))
+        except Exception:
+            pass
+        try:
+            self._reply_interval = max(0.0, self.config.getfloat('settings', 'reply_interval'))
+        except Exception:
+            pass
+        try:
+            self._reply_retries = max(0, self.config.getint('settings', 'reply_retries'))
         except Exception:
             pass
         try:
@@ -155,8 +172,9 @@ class ExpqueryPlugin(b3.plugin.Plugin):
             self._reply_thread.setDaemon(True)
             self._reply_thread.start()
 
-        self.debug('Expquery ready. reply_cvar=%s, reply_timeout=%ss, async=%s, props=%s', self._reply_cvar,
-                   self._reply_timeout, self._async_replies,
+        self.debug('Expquery ready. reply_cvar=%s, reply_timeout=%ss, reply_interval=%ss, reply_retries=%s, '
+                   'async=%s, props=%s', self._reply_cvar, self._reply_timeout, self._reply_interval,
+                   self._reply_retries, self._async_replies,
                    ', '.join('%s=%s.%s' % (p, t, c) for p, (t, c) in sorted(self._props.items())))
 
     def onStop(self, event):
@@ -371,11 +389,11 @@ class ExpqueryPlugin(b3.plugin.Plugin):
         # (GSC keeps one query in flight per player, so it has stopped waiting for the older one)
         with self._replies_lock:
             older = self._replies.get(cvar)
-            self._replies[cvar] = text
+            self._replies[cvar] = (text, 0)
         if older is None:
             self._reply_queue.put(cvar)
         else:
-            self.debug('dropping unsent reply %s for %s (newer query %s)', older, cvar, text)
+            self.debug('dropping unsent reply %s for %s (newer query %s)', older[0], cvar, text)
 
     def _reply_worker(self):
         while True:
@@ -383,15 +401,75 @@ class ExpqueryPlugin(b3.plugin.Plugin):
             if cvar is None:
                 break
             with self._replies_lock:
-                text = self._replies.pop(cvar, None)
-            if text is not None:
-                self._send(cvar, text)
+                item = self._replies.pop(cvar, None)
+            if item is None:
+                continue
+            text, attempt = item
+
+            # the engine ignores rcon arriving too soon after the previous packet
+            wait = self._last_send + self._reply_interval - time.time()
+            if wait > 0:
+                time.sleep(wait)
+            delivered = self._send(cvar, text)
+            self._last_send = time.time()
+            if delivered:
+                continue
+
+            if attempt >= self._reply_retries:
+                self.warning('reply %s = %s not acknowledged by the server after %s attempts: giving up',
+                             cvar, text, attempt + 1)
+                continue
+            with self._replies_lock:
+                if cvar in self._replies:
+                    # a newer query for this slot is already waiting: send that instead
+                    self.debug('not resending reply %s for %s (newer query %s)', text, cvar, self._replies[cvar][0])
+                    continue
+                self._replies[cvar] = (text, attempt + 1)
+            self.debug('reply %s = %s not acknowledged: resending (attempt %s)', cvar, text, attempt + 2)
+            # back of the queue: other players' replies are not held up by the retry
+            self._reply_queue.put(cvar)
 
     def _send(self, cvar, text):
+        """
+        Set the reply dvar. Return False if the server did not acknowledge the rcon packet.
+        """
         cmd = self.console.getCommand('set', name=cvar, value=text) or 'set %s "%s"' % (cvar, text)
         try:
-            # we never need the server's (empty) answer to a set: a short timeout keeps replies fast
-            self.console.write(cmd, maxRetries=1, socketTimeout=self._reply_timeout)
-            self.debug('reply %s = %s', cvar, text)
+            output = self.console.output
+            if isinstance(getattr(output, 'socket', None), socket.socket):
+                delivered = self._rcon_set(output, cmd)
+            else:
+                # not a q3a rcon (or a test double): no way to tell, assume it arrived
+                self.console.write(cmd, maxRetries=1, socketTimeout=self._reply_timeout)
+                delivered = True
         except Exception, e:
             self.error('failed to set %s: %s', cvar, e)
+            return False
+        if delivered:
+            self.debug('reply %s = %s', cvar, text)
+        return delivered
+
+    def _rcon_set(self, output, cmd):
+        """
+        Send one rcon command and report whether the server answered it.
+        B3's own write() returns '' both for an empty answer (a successful set) and for no answer
+        at all (packet ignored by the engine), so the socket is read directly here.
+        """
+        if self.console.encoding:
+            cmd = output.encode_data(cmd, 'RCON')
+        with output.lock:
+            sock = output.socket
+            # discard anything left over (e.g. a late answer to an earlier command)
+            while select.select([sock], [], [], 0)[0]:
+                if not sock.recv(4096):
+                    break
+            self.console.verbose('RCON sending (%s:%s) %r', output.host[0], output.host[1], cmd)
+            sock.send(output.rconsendstring % (output.password, cmd))
+            readables = select.select([sock], [], [], self._reply_timeout)[0]
+            if not readables:
+                return False
+            while readables:
+                if not sock.recv(4096):
+                    break
+                readables = select.select([sock], [], [], 0.05)[0]
+            return True

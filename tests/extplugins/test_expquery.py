@@ -261,14 +261,20 @@ class Test_get(ExpqueryTestCase):
 
     def test_reply_uses_short_rcon_timeout(self):
         self.get(client=self.client)
-        self.assertEqual([{'maxRetries': 1, 'socketTimeout': 0.1}], self.write_kwargs)
+        self.assertEqual([{'maxRetries': 1, 'socketTimeout': 0.3}], self.write_kwargs)
 
 
 class Test_async_replies(ExpqueryTestCase):
 
     def setUp(self):
         ExpqueryTestCase.setUp(self)
-        self.init(DEFAULT_CONFIG.replace('<set name="async_replies">no</set>', ''))
+        self.init(DEFAULT_CONFIG.replace('<set name="async_replies">no</set>',
+                                         '<set name="reply_interval">0.05</set>'))
+
+    def wait_for(self, condition, timeout=2):
+        deadline = time.time() + timeout
+        while not condition() and time.time() < deadline:
+            time.sleep(0.01)
 
     def tearDown(self):
         self.p._reply_queue.put(None)
@@ -311,6 +317,46 @@ class Test_async_replies(ExpqueryTestCase):
                          [c[0] for c in self.sent.call_args_list])
         self.p.debug.assert_any_call('dropping unsent reply %s for %s (newer query %s)',
                                      '2;1234', 'query_result_4', '3;1234')
+
+    def test_unacknowledged_reply_is_resent(self):
+        sends = []
+        self.p._send = Mock(side_effect=lambda cvar, text: sends.append((cvar, text, time.time())) or len(sends) > 1)
+        self.get(client=self.client)
+        self.wait_for(lambda: len(sends) >= 2)
+        time.sleep(0.1)
+        self.assertEqual([('query_result_4', '17;1234')] * 2, [s[:2] for s in sends])
+        self.assertGreaterEqual(sends[1][2] - sends[0][2], 0.05)  # spaced by reply_interval
+
+    def test_gives_up_after_reply_retries(self):
+        self.p._reply_retries = 2
+        self.p._send = Mock(return_value=False)
+        self.p.warning = Mock()
+        self.get(client=self.client)
+        self.wait_for(lambda: self.p.warning.called)
+        time.sleep(0.15)
+        self.assertEqual(3, self.p._send.call_count)
+        self.p.warning.assert_called_once_with(
+            'reply %s = %s not acknowledged by the server after %s attempts: giving up',
+            'query_result_4', '17;1234', 3)
+
+    def test_retry_skipped_when_newer_query_waiting(self):
+        release = threading.Event()
+        calls = []
+
+        def send(cvar, text):
+            calls.append(text)
+            if len(calls) == 1:
+                release.wait(2)
+                return False   # first reply not acknowledged ...
+            return True
+        self.p._send = Mock(side_effect=send)
+        self.get(qid='2', client=self.client)
+        self.wait_for(lambda: calls)
+        self.get(qid='3', client=self.client)   # ... but a newer query arrived meanwhile
+        release.set()
+        self.wait_for(lambda: len(calls) >= 2)
+        time.sleep(0.15)
+        self.assertEqual(['2;1234', '3;1234'], calls)
 
 
 class Test_set(ExpqueryTestCase):
