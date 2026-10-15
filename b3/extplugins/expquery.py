@@ -368,11 +368,14 @@ class ExpqueryPlugin(b3.plugin.Plugin):
             return
 
         # coalesce: if a reply for this dvar is still waiting, replace it instead of queueing another send
+        # (GSC keeps one query in flight per player, so it has stopped waiting for the older one)
         with self._replies_lock:
-            waiting = cvar in self._replies
+            older = self._replies.get(cvar)
             self._replies[cvar] = text
-        if not waiting:
+        if older is None:
             self._reply_queue.put(cvar)
+        else:
+            self.debug('dropping unsent reply %s for %s (newer query %s)', older, cvar, text)
 
     def _reply_worker(self):
         while True:

@@ -293,6 +293,7 @@ class Test_async_replies(ExpqueryTestCase):
             release.wait(2)
             original(cmd, **kwargs)
         self.console.write.side_effect = slow_write
+        self.p.debug = Mock()
 
         self.db.insert('clients', id=2, guid='654321')
         self.db.insert('xlr_playerstats', client_id=2, exp=50, skill=1000)
@@ -308,6 +309,8 @@ class Test_async_replies(ExpqueryTestCase):
         time.sleep(0.1)
         self.assertEqual([('query_result_9', '1;50'), ('query_result_4', '3;1234')],
                          [c[0] for c in self.sent.call_args_list])
+        self.p.debug.assert_any_call('dropping unsent reply %s for %s (newer query %s)',
+                                     '2;1234', 'query_result_4', '3;1234')
 
 
 class Test_set(ExpqueryTestCase):
