@@ -211,3 +211,41 @@ class Test_exp_events(CodTestCase):
     def test_sayteam_still_parsed_as_sayteam(self):
         self.console.parseLine('sayteam;theGuid;4;theName;hello team')
         self.assertEqual(self.console.getEventID('EVT_CLIENT_TEAM_SAY'), self.last_event().type)
+
+
+class Test_match_result_events(CodTestCase):
+    """
+    CODUO-X endMap W; / L; / TIE; lines: one EVT_CLIENT_ACTION per player.
+    """
+
+    def setUp(self):
+        CodTestCase.setUp(self)
+        self.queueEvent_mock = Mock()
+        self.console.queueEvent = self.queueEvent_mock
+
+    def actions(self):
+        return [(e.data['action'], e.data['team'], e.data['guid'], e.data['name'])
+                for e in (c[0][0] for c in self.queueEvent_mock.call_args_list)]
+
+    def test_win_line(self):
+        self.console.parseLine('W;axis;123456;Kasey;654321;^1Bob')
+        self.assertEqual([('match_win', 'axis', '123456', 'Kasey'), ('match_win', 'axis', '654321', '^1Bob')],
+                         self.actions())
+
+    def test_loss_line(self):
+        self.console.parseLine('L;allies;123456;Kasey')
+        self.assertEqual([('match_loss', 'allies', '123456', 'Kasey')], self.actions())
+
+    def test_tie_line(self):
+        self.console.parseLine('TIE;allies;123456;Kasey;654321;Bob')
+        self.assertEqual([('match_draw', 'allies', '123456', 'Kasey'), ('match_draw', 'allies', '654321', 'Bob')],
+                         self.actions())
+
+    def test_tie_line_with_double_separator(self):
+        # older CODUO-X builds logged an extra ';' before the first player
+        self.console.parseLine('TIE;axis;;123456;Kasey')
+        self.assertEqual([('match_draw', 'axis', '123456', 'Kasey')], self.actions())
+
+    def test_tie_line_without_players(self):
+        self.console.parseLine('TIE;axis;')
+        self.assertEqual([], self.actions())

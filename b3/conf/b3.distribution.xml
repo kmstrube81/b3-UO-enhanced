@@ -156,6 +156,7 @@
         <!-- <plugin name="translator" config="@b3/conf/plugin_translator.ini" /> -->
         <!-- <plugin name="urtserversidedemo" config="@b3/conf/plugin_urtserversidedemo.ini" /> -->
         <!-- <plugin name="xlrstats" config="@b3/conf/plugin_xlrstats.ini" /> -->
+        <!-- <plugin name="pamx" config="@b3/conf/plugin_pamx.ini" /> -->
 
     </plugins>
 </configuration>

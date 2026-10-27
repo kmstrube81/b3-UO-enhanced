@@ -119,6 +119,11 @@ class CodParser(AbstractParser):
         #   RL;axis|allies; GUID;Name;GUID;Name...
         re.compile(r'^(?P<action>RW|RL);(?P<data>.+)$', re.IGNORECASE),
 
+        # Team match draws (CODUO-X endMap logs one line per side):
+        #   TIE;axis;GUID;Name;GUID;Name...
+        #   TIE;allies;GUID;Name;GUID;Name...
+        re.compile(r'^(?P<action>TIE);(?P<data>.+)$', re.IGNORECASE),
+
         # suicides (cod4/cod5)
         re.compile(r'^(?P<action>[A-Z]);'
                    r'(?P<data>'
@@ -567,6 +572,10 @@ class CodParser(AbstractParser):
         # Team/DM losers (variable # of players)
         return self._handle_match_wl('L', match.group('data'))
     
+    def OnTie(self, action, data, match=None):
+        # Team match draw (variable # of players, one line per side)
+        return self._handle_match_wl('TIE', match.group('data'))
+
     def OnRw(self, action, data, match=None):
         # Round winners (variable # of players)
         return self._handle_round_wl('RW', match.group('data'))
@@ -955,7 +964,7 @@ class CodParser(AbstractParser):
             team = team.lower()
 
         mapname, gametype = self._current_map_and_mode()
-        action_name = 'match_win' if wl == 'W' else 'match_loss'
+        action_name = {'W': 'match_win', 'L': 'match_loss', 'TIE': 'match_draw'}[wl]
         extra = {'map': mapname, 'gametype': gametype, 'team': team}
 
         for name, guid in self._pairs_guid_name(rest):
