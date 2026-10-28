@@ -76,6 +76,10 @@ class PamxPlugin(b3.plugin.Plugin):
         'draft_roster_full': '^7the ^3$team ^7roster would be ^1$length ^7characters, the limit is ^3$max^7: '
                              '^3$player ^7not drafted',
         'draft_set': '^3$player ^7drafted to ^3$team',
+        'cut_not_captain': '^7only a team captain can cut players',
+        'cut_self': '^7you are the captain of ^3$team^7: you cannot cut yourself',
+        'cut_not_on_roster': '^3$player ^7is not on the ^3$team ^7roster',
+        'cut_set': '^3$player ^7cut from ^3$team',
         'result_win': '^7match result: ^3$winner ^7beat ^3$loser',
         'result_draw': '^7match result: ^3$team1 ^7and ^3$team2 ^7drew',
         'result_not_recorded': '^7match result not recorded: $reason',
@@ -751,3 +755,39 @@ class PamxPlugin(b3.plugin.Plugin):
         self.console.setCvar('pam_team%s_roster' % slot, roster)
         self.info('%s (captain of team %s) drafted %s (%s)', client.name, slot, target.name, guid)
         client.message(self.getMessage('draft_set', {'player': target.name, 'team': team}))
+
+    def cmd_cutplayer(self, data, client, cmd=None):
+        """
+        <player> - captains only: remove a player from your team's PAM roster so another team can draft them
+        """
+        if not data or not data.strip():
+            self.usage(client, cmd, '<player>')
+            return
+        slot = self.captain_slot(client.guid)
+        if not slot:
+            client.message(self.getMessage('cut_not_captain'))
+            return
+
+        target = self.adminPlugin.findClientPrompt(data.strip(), client)
+        if not target:
+            return
+        team = self.roster_team_name(slot)
+        if target is client:
+            client.message(self.getMessage('cut_self', {'team': team}))
+            return
+        if not self.is_valid_guid(target.guid):
+            self.warning('cannot cut %s: invalid GUID %r', target.name, target.guid)
+            client.message(self.getMessage('captain_invalid_guid', {'player': target.name}))
+            return
+        guid = ('%s' % target.guid).strip()
+
+        roster = self.get_cvar_string('pam_team%s_roster' % slot)
+        if not self.in_roster(guid, roster):
+            client.message(self.getMessage('cut_not_on_roster', {'player': target.name, 'team': team}))
+            return
+
+        # rebuild with every GUID followed by its ';', as PAM_CheckRoster expects
+        roster = ''.join('%s;' % g for g in roster.split(';') if g and g != guid)
+        self.console.setCvar('pam_team%s_roster' % slot, roster)
+        self.info('%s (captain of team %s) cut %s (%s)', client.name, slot, target.name, guid)
+        client.message(self.getMessage('cut_set', {'player': target.name, 'team': team}))

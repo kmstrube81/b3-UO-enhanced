@@ -38,6 +38,7 @@ who are not connected. When several players match, the candidates are listed.
 | `!makecaptain <player>` | admin | Make a connected player a PAM captain (`pam_team1_captain` / `pam_team2_captain`). |
 | `!captain` | guest | Make yourself a captain. |
 | `!draftplayer <player>` | guest | Captains only: add a player to your team's PAM roster (`pam_team1/2_roster`). |
+| `!cutplayer <player>` | guest | Captains only: remove a player from your team's PAM roster so another team can draft them. |
 
 `!pug`, `!pub` and `!scrim` cancel an active match (its result is not recorded) and clear the PAM team names and
 rosters it set. There is no separate cancel command.
@@ -76,6 +77,14 @@ draft menu does (`PAM_DraftAddPlayerToRoster`):
 - PAM only reads the rosters when a player connects, so a drafted player is moved onto the team when PAM next runs its
   roster check for them, not instantly. PAM also empties both rosters when its draft starts and at every map end, so
   players drafted before the draft starts are lost.
+
+`!cutplayer <player>` is the reverse, like a cut in PAM's draft menu (`PAM_DraftCutPlayerFromRoster`): it removes the
+player's GUID from the roster of the slot you captain, after which either captain can `!draftplayer` them.
+
+- Only your own roster: a player on the other team's roster is reported as not on yours.
+- You can't cut yourself.
+- Unlike PAM's menu, the player is not moved to spectator. They stay on their current team until they rejoin or are
+  drafted and placed by PAM.
 
 ## Configuration (`plugin_pamx.ini`)
 

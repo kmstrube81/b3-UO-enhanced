@@ -41,7 +41,8 @@ class Test_schema(PamxTestCase):
         self.console.storage.queryFromFile('@b3/plugins/pamx/sql/sqlite/pamx.sql')
 
     def test_commands_registered(self):
-        for cmd in ('maketeam', 'addplayer', 'match', 'pug', 'pub', 'scrim', 'makecaptain', 'captain', 'draftplayer'):
+        for cmd in ('maketeam', 'addplayer', 'match', 'pug', 'pub', 'scrim', 'makecaptain', 'captain', 'draftplayer',
+                    'cutplayer'):
             self.assertIn(cmd, self.adminPlugin._commands)
 
 
@@ -358,12 +359,14 @@ class Test_captains(PamxTestCase):
         self.assertEqual(['Sorry but both captains have already been assigned'], self.guest.message_history)
 
 
-class Test_draftplayer(PamxTestCase):
+class DraftTestCase(PamxTestCase):
+    """
+    The guest (22222222) captains team 1 ("Guest"), 55555555 captains team 2 (no name set).
+    """
 
     def setUp(self):
         PamxTestCase.setUp(self)
         self.kasey = self.new_player('Kasey', '12345678', cid='2')
-        # the guest (22222222) captains team 1
         self.console.setCvar('pam_team1_captain', '22222222')
         self.console.setCvar('pam_team2_captain', '55555555')
         self.console.setCvar('pam_team1_name', 'Guest')
@@ -372,6 +375,9 @@ class Test_draftplayer(PamxTestCase):
 
     def rosters(self):
         return self.cvar('pam_team1_roster'), self.cvar('pam_team2_roster')
+
+
+class Test_draftplayer(DraftTestCase):
 
     def test_draft_to_own_team(self):
         self.guest.says('!draftplayer kasey')
@@ -465,3 +471,81 @@ class Test_draftplayer(PamxTestCase):
     def test_missing_player(self):
         self.guest.says('!draftplayer')
         self.assertEqual(['usage: !draftplayer <player>'], self.guest.message_history)
+
+
+class Test_cutplayer(DraftTestCase):
+    """
+    Kasey (12345678) and 33333333 drafted to the guest's team 1.
+    """
+
+    def setUp(self):
+        DraftTestCase.setUp(self)
+        self.console.setCvar('pam_team1_roster', '22222222;12345678;33333333;')
+
+    def test_cut_from_own_team(self):
+        self.guest.says('!cutplayer kasey')
+        self.assertEqual(('22222222;33333333;', '55555555;'), self.rosters())
+        self.assertEqual(['Kasey cut from Guest'], self.guest.message_history)
+
+    def test_cut_last_player(self):
+        self.console.setCvar('pam_team1_roster', '22222222;12345678;')
+        self.guest.says('!cutplayer kasey')
+        self.assertEqual('22222222;', self.cvar('pam_team1_roster'))
+
+    def test_guid_without_trailing_separator_is_not_on_roster(self):
+        # PAM_CheckRoster needs the trailing ';' too, so PAM doesn't consider this player rostered either
+        self.console.setCvar('pam_team1_roster', '22222222;12345678')
+        self.guest.says('!cutplayer kasey')
+        self.assertEqual('22222222;12345678', self.cvar('pam_team1_roster'))
+        self.assertEqual(['Kasey is not on the Guest roster'], self.guest.message_history)
+
+    def test_cut_player_can_be_drafted_by_other_team(self):
+        self.guest.says('!cutplayer kasey')
+        other = self.new_player('Other', '55555555', cid='3')
+        other.says('!draftplayer kasey')
+        self.assertEqual(('22222222;33333333;', '55555555;12345678;'), self.rosters())
+        self.assertEqual(['Kasey drafted to team 2'], other.message_history)
+
+    def test_cut_offline_player_by_db_id(self):
+        offline = self.new_player('Offline', '87654321')
+        self.console.setCvar('pam_team1_roster', '22222222;87654321;')
+        self.guest.says('!cutplayer @%s' % offline.id)
+        self.assertEqual('22222222;', self.cvar('pam_team1_roster'))
+
+    def test_not_a_captain(self):
+        self.console.setCvar('pam_team1_captain', '')
+        self.guest.says('!cutplayer kasey')
+        self.assertEqual('22222222;12345678;33333333;', self.cvar('pam_team1_roster'))
+        self.assertEqual(['only a team captain can cut players'], self.guest.message_history)
+
+    def test_cannot_cut_from_other_team(self):
+        self.console.setCvar('pam_team1_roster', '22222222;')
+        self.console.setCvar('pam_team2_roster', '55555555;12345678;')
+        self.guest.says('!cutplayer kasey')
+        self.assertEqual(('22222222;', '55555555;12345678;'), self.rosters())
+        self.assertEqual(['Kasey is not on the Guest roster'], self.guest.message_history)
+
+    def test_not_on_roster(self):
+        self.console.setCvar('pam_team1_roster', '22222222;')
+        self.guest.says('!cutplayer kasey')
+        self.assertEqual(['Kasey is not on the Guest roster'], self.guest.message_history)
+
+    def test_guid_prefix_is_not_a_match(self):
+        self.console.setCvar('pam_team1_roster', '22222222;1234567;123456789;')
+        self.guest.says('!cutplayer kasey')
+        self.assertEqual('22222222;1234567;123456789;', self.cvar('pam_team1_roster'))
+        self.assertEqual(['Kasey is not on the Guest roster'], self.guest.message_history)
+
+    def test_cannot_cut_self(self):
+        self.guest.says('!cutplayer guest')
+        self.assertEqual('22222222;12345678;33333333;', self.cvar('pam_team1_roster'))
+        self.assertEqual(['you are the captain of Guest: you cannot cut yourself'], self.guest.message_history)
+
+    def test_guid_zero_refused(self):
+        self.new_player('Zero', '0', cid='3')
+        self.guest.says('!cutplayer zero')
+        self.assertEqual(['Zero has no valid GUID'], self.guest.message_history)
+
+    def test_missing_player(self):
+        self.guest.says('!cutplayer')
+        self.assertEqual(['usage: !cutplayer <player>'], self.guest.message_history)
